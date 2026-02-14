@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  /* This maps the Inter font to Tailwind's 'font-sans' utility */
+  --font-sans: "Inter", "system-ui", "sans-serif";
+
+  /* Optional: Customizing durations or transitions to match your editorial look */
+  --transition-duration-default: 300ms;
+}
+
+/* Base Styles */
+@layer base {
+  body {
+    @apply m-0 p-0 antialiased;
+    /* Ensure the body is ready for the extension sidebar overlay */
+    background-color: transparent;
+  }
+
+  /* Custom scrollbar for the sidebar to match the B&W theme */
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+}
+
+/* Custom Utilities if needed for the 'selection-tag' logic */
+@layer utilities {
+  .writing-mode-vertical {
+    writing-mode: vertical-lr;
+  }
+}
