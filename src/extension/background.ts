@@ -207,6 +207,21 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'FETCH_LOG_BODY') {
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/ApexLog/${request.logId}/Body`, {
+          headers: { 
+            'Authorization': `Bearer ${request.sessionId}`
+          }
+        })
+        .then(res => res.ok ? res.text() : res.text().then(text => {
+          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+        }))
+        .then(data => sendResponse({ success: true, data }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+        
+        return true;
+      }
+
       if (request.type === 'CHECK_DEBUG_SESSION') {
         // Check for active TraceFlag for the current user
         const query = `SELECT Id, ExpirationDate, DebugLevelId, TracedEntityId FROM TraceFlag WHERE TracedEntityId = '${request.userId}' AND ExpirationDate > ${new Date().toISOString()} ORDER BY ExpirationDate DESC LIMIT 1`;

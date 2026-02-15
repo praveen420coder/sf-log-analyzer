@@ -3,8 +3,10 @@ import { ChevronRight, Info, Activity, Copy, Download } from 'lucide-react';
 import type { Log } from '../../types';
 import { ApexLogParser, formatDuration } from '../../utils/apexLogParser';
 import type { ParsedLog } from '../../utils/apexLogParser';
+import { LogAnalyzer, type PerformanceInsight, type LogMetrics } from '../../utils/logAnalyzer';
 import TreeView from './TreeView';
 import TimelineView from './TimelineView';
+import InsightsView from './InsightsView';
 
 const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string | null; sessionId?: string | null }> = ({ log, onBack, instanceUrl, sessionId }) => {
   const [logBody, setLogBody] = useState<string>('');
@@ -12,8 +14,11 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
   const [copied, setCopied] = useState(false);
   const [selectedFilters, setSelectedFilters] = useState<Set<string>>(new Set());
   const [searchText, setSearchText] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'complete' | 'tree' | 'timeline' | 'soql'>('tree');
+  const [activeTab, setActiveTab] = useState<'complete' | 'tree' | 'timeline' | 'soql' | 'insights'>('tree');
   const [parsedLog, setParsedLog] = useState<ParsedLog | null>(null);
+  const [insights, setInsights] = useState<PerformanceInsight[]>([]);
+  const [metrics, setMetrics] = useState<LogMetrics | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const logId = log.id || log.Id || 'N/A';
   const logStatus = log.status || log.Status || 'Unknown';
@@ -114,6 +119,19 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
               const parser = new ApexLogParser(text);
               const parsed = parser.parse();
               setParsedLog(parsed);
+              
+              // Analyze the log for insights
+              setIsAnalyzing(true);
+              try {
+                const analyzer = new LogAnalyzer(log);
+                const result = await analyzer.analyzeLog(text);
+                setInsights(result.insights);
+                setMetrics(result.metrics);
+              } catch (analyzeError) {
+                // Analysis failed, but continue
+              } finally {
+                setIsAnalyzing(false);
+              }
             } catch (parseError) {
               // Failed to parse log
             }
@@ -147,6 +165,8 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
       contentToCopy = 'Use download to export tree structure';
     } else if (activeTab === 'soql') {
       contentToCopy = parseSoqlQueries(logBody);
+    } else if (activeTab === 'insights') {
+      contentToCopy = insights.map(i => `[${i.severity.toUpperCase()}] ${i.title}: ${i.description}`).join('\n\n');
     }
     
     navigator.clipboard.writeText(contentToCopy);
@@ -184,6 +204,11 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
     } else if (activeTab === 'soql') {
       content = parseSoqlQueries(logBody);
       filename = `${logId}_soql_queries.txt`;
+    } else if (activeTab === 'insights') {
+      if (metrics) {
+        content = JSON.stringify({ insights, metrics }, null, 2);
+        filename = `${logId}_insights.json`;
+      }
     }
     
     const file = new Blob([content], { type: 'text/plain' });
@@ -247,6 +272,7 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
               {/* Tabs */}
               <div className="flex gap-2 border-b border-zinc-700 overflow-x-auto">
                 {[
+                  { id: 'insights', label: '⚡ Insights' },
                   { id: 'tree', label: 'Call Tree' },
                   { id: 'timeline', label: 'Timeline' },
                   { id: 'soql', label: 'SOQL Queries' },
@@ -254,7 +280,7 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
                 ].map((tab) => (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveTab(tab.id as 'complete' | 'tree' | 'timeline' | 'soql')}
+                    onClick={() => setActiveTab(tab.id as 'complete' | 'tree' | 'timeline' | 'soql' | 'insights')}
                     className={`px-4 py-2 text-[9px] font-black uppercase tracking-[0.15em] border-b-2 transition-colors whitespace-nowrap ${
                       activeTab === tab.id
                         ? 'border-blue-500 text-blue-400'
@@ -344,6 +370,15 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
               </div>
             ) : (
               <div className="max-h-[500px] overflow-y-auto">
+                {activeTab === 'insights' && (
+                  <div className="bg-white p-6 rounded-lg">
+                    <InsightsView 
+                      insights={insights}
+                      metrics={metrics || { totalSoqlTime: 0, totalDmlTime: 0 }}
+                      isAnalyzing={isAnalyzing}
+                    />
+                  </div>
+                )}
                 {activeTab === 'tree' && parsedLog && (
                   <TreeView nodes={parsedLog.methodTree} />
                 )}
