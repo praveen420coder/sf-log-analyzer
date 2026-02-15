@@ -58,27 +58,34 @@ const DashboardView: React.FC<{
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {logs.map((log) => (
-                <tr key={log.id} className="group hover:bg-zinc-50 transition-colors">
-                  <td className="py-6 text-xs font-bold text-black">{log.startTime.split(',')[1] || log.startTime}</td>
-                  <td className="py-6">
-                    <span className={`text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-md border-2 border-black ${
-                      log.status === 'Error' ? 'bg-black text-white' : 'bg-transparent text-black'
-                    }`}>
-                      {log.status}
-                    </span>
-                  </td>
-                  <td className="py-6 text-xs font-black text-gray-500">{log.size}</td>
-                  <td className="py-6 text-right">
-                    <button 
-                      onClick={() => onExplore(log)}
-                      className="inline-flex items-center justify-center w-10 h-10 rounded-xl border-2 border-black text-black hover:bg-black hover:text-white transition-all shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]"
-                    >
-                      <ChevronRight size={18} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {logs.map((log) => {
+                const logId = log.id || log.Id || '';
+                const logTime = log.startTime || log.StartTime || '';
+                const logStatus = log.status || log.Status || 'Unknown';
+                const logSize = log.size || ((log.LogLength || 0) / 1024).toFixed(2) + ' KB';
+                
+                return (
+                  <tr key={logId} className="group hover:bg-zinc-50 transition-colors">
+                    <td className="py-6 text-xs font-bold text-black">{logTime.split(',')[1] || logTime}</td>
+                    <td className="py-6">
+                      <span className={`text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-md border-2 border-black ${
+                        logStatus === 'Error' || logStatus.includes('Error') ? 'bg-black text-white' : 'bg-transparent text-black'
+                      }`}>
+                        {logStatus}
+                      </span>
+                    </td>
+                    <td className="py-6 text-xs font-black text-gray-500">{logSize}</td>
+                    <td className="py-6 text-right">
+                      <button 
+                        onClick={() => onExplore(log)}
+                        className="inline-flex items-center justify-center w-10 h-10 rounded-xl border-2 border-black text-black hover:bg-black hover:text-white transition-all shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]"
+                      >
+                        <ChevronRight size={18} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

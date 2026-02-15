@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "SF Log Analyzer",
+  "version": "1.0.0",
+  "description": "Analyze Salesforce system logs directly from your Salesforce environment",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://*.salesforce.com/*",
+    "https://*.force.com/*",
+    "https://*.cloudforce.com/*",
+    "https://*.salesforce.mil/*",
+    "https://*.cloudforce.mil/*",
+    "https://*.sfcrmproducts.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.force.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.force.com/*"
+      ],
+      "js": ["content-ui.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["index.html", "chunks/*", "*.js", "*.css", "assets/*"],
+      "matches": ["https://*.salesforce.com/*", "https://*.force.com/*"]
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+# GitHub Copilot Instructions for SF Log Analyzer
+
+## Project Overview
+SF Log Analyzer is a modern React + TypeScript application for analyzing Salesforce system logs. It provides a dashboard view for metrics and a detail view for in-depth log exploration.
+
+## Code Style & Conventions
+
+### TypeScript
+- Use strict TypeScript with proper typing
+- Always define component prop interfaces using React.FC<{...}>
+- Use type-safe patterns and avoid `any`
+- Import types using `import type { ... }` syntax
+
+### React Components
+- Functional components with hooks (useState, React.FC)
+- Organize components in feature-based folders under `src/components/`
+- Name exported components PascalCase (e.g., DashboardView, DetailView)
+- Keep components focused and reusable
+- Use React.FC pattern for component typing
+
+### Styling
+- Use Tailwind CSS utility classes
+- Apply responsive design with Tailwind breakpoints (md, lg)
+- Use consistent spacing with Tailwind spacing scale
+- Implement smooth transitions with `transition-all duration-500`
+- Follow the existing color palette (black, white, gray-100, gray-200, gray-500)
+
+### File Structure
+```
+src/
+├── App.tsx (main app component)
+├── App.css (global styles)
+├── main.tsx (entry point)
+├── index.css (base styles)
+├── components/
+│   └── LogKit/ (feature components)
+│       ├── DashboardView.tsx
+│       ├── DetailView.tsx
+│       ├── Header.tsx
+│       └── SidebarTrigger.tsx
+├── types/
+│   └── index.ts (type definitions)
+└── assets/ (static assets)
+```
+
+## Component Patterns
+
+### Type Definitions
+- Store type definitions in `src/types/index.ts`
+- Use interfaces for component props and data structures
+- Example types: `Log`, `Metric`
+
+### Data Flow
+- Use React hooks (useState) for state management
+- Pass data and callbacks as props
+- Implement view switching with `view` state ('dashboard' | 'detail')
+
+### Responsive Design
+- Start with mobile-first approach
+- Use Tailwind breakpoints: `md:`, `lg:` for larger screens
+- Example: `w-full md:w-1/2 lg:w-[45%]`
+
+## UI/UX Guidelines
+
+### Components
+- Use lucide-react for icons (Terminal, RotateCcw, ChevronRight, Database, etc.)
+- Implement loading states with visual feedback (spinner, disabled states)
+- Use consistent button styling (rounded-full, font-bold, tracking-widest)
+- Add hover and active states with transition effects
+
+### Typography
+- Use bold, uppercase headings with `font-black` and `uppercase`
+- Use `tracking-widest` and `tracking-[0.2em]` for letter spacing
+- Implement visual hierarchy with text sizes
+
+### Layout
+- Implement collapsible sidebar pattern for content panels
+- Use fixed positioning for persistent UI elements
+- Apply smooth animations with `transition-all` and duration settings
+
+## Dependencies
+- **react**: 19.2.0
+- **react-dom**: 19.2.0
+- **typescript**: Latest
+- **vite**: Build tool
+- **tailwindcss**: 4.1.18 (with postcss)
+- **lucide-react**: 0.564.0 (icons)
+
+## Build & Development
+- Development: `npm run dev` (Vite dev server)
+- Production: `npm run build` (TypeScript compile + Vite build)
+- Linting: `npm run lint` (ESLint)
+- Preview: `npm run preview` (preview production build)
+
+## Performance Considerations
+- Use React.memo for expensive components
+- Implement lazy loading for views when applicable
+- Keep state updates minimal with proper React hooks usage
+- Use TypeScript for early error detection
+
+## Git Conventions
+- Use clear, descriptive commit messages
+- Keep commits focused on single features/fixes
+- Use feature branches for new development
+
+## Common Patterns to Follow
+
+### Fetch Mock Data
+```typescript
+const fetchLogs = () => {
+  setIsFetching(true);
+  setTimeout(() => {
+    // Simulate API call
+    const mock: Log[] = Array.from({ length: 10 }).map((_, i) => ({
+      id: `LOG-${1000 + i}`,
+      startTime: new Date().toLocaleString(),
+      status: Math.random() > 0.2 ? 'Success' : 'Error',
+      size: `${(Math.random() * 50 + 10).toFixed(1)} KB`,
+      details: "..."
+    }));
+    setLogs(mock);
+    setIsFetching(false);
+  }, 1000);
+};
+```
+
+### Component Props Pattern
+```typescript
+const MyComponent: React.FC<{
+  data: DataType;
+  onAction: (item: Item) => void;
+  isLoading: boolean;
+}> = ({ data, onAction, isLoading }) => {
+  // Component logic
+};
+```
+
+### Responsive Classes Pattern
+```tsx
+className={`
+  fixed inset-y-0 right-0 
+  w-full md:w-1/2 lg:w-[45%]
+  transition-all duration-500 ease-in-out
+  ${conditionClass ? 'active-state' : 'inactive-state'}
+`}
+```
+
+## Testing Guidelines
+- Write unit tests for utility functions
+- Test component rendering and interactions
+- Ensure TypeScript types are properly validated
+
+## Documentation
+- Use JSDoc comments for complex functions
+- Document component prop interfaces clearly
+- Keep README up-to-date with project changes

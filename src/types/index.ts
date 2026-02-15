@@ -1,9 +1,14 @@
 export interface Log {
-  id: string;
-  startTime: string;
-  status: 'Success' | 'Error';
-  size: string;
-  details: string;
+  Id?: string;
+  id?: string;
+  StartTime?: string;
+  startTime?: string;
+  Status?: string;
+  status?: string;
+  LogLength?: number;
+  size?: string;
+  Operation?: string;
+  details?: string;
 }
 
 export interface Metric {
