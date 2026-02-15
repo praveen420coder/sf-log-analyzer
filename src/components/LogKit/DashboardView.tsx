@@ -1,5 +1,5 @@
-import React from 'react';
-import { Terminal, RotateCcw, ChevronRight, Database } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Terminal, RotateCcw, ChevronRight, Database, User, Play, Clock, X, Trash2 } from 'lucide-react';
 import type { Log, Metric } from '../../types';
 
 const DashboardView: React.FC<{
@@ -8,28 +8,123 @@ const DashboardView: React.FC<{
   isFetching: boolean;
   onFetch: () => void;
   onExplore: (log: Log) => void;
-}> = ({ logs, metrics, isFetching, onFetch, onExplore }) => (
+  instanceUrl?: string | null;
+  userInfo?: any;
+  debugSession?: any;
+  isCreatingDebugSession?: boolean;
+  onCreateDebugSession?: () => void;
+  onStopDebugSession?: () => void;
+  isStoppingDebugSession?: boolean;
+  onDeleteAllLogs?: () => void;
+  isDeletingAllLogs?: boolean;
+}> = ({ logs, metrics, isFetching, onFetch, onExplore, instanceUrl, userInfo, debugSession, isCreatingDebugSession, onCreateDebugSession, onStopDebugSession, isStoppingDebugSession, onDeleteAllLogs, isDeletingAllLogs }) => {
+  const [timeRemaining, setTimeRemaining] = useState<string>('');
+
+  // Update timer every second
+  useEffect(() => {
+    if (!debugSession?.ExpirationDate) {
+      return;
+    }
+
+    const updateTimer = () => {
+      const expiration = new Date(debugSession.ExpirationDate).getTime();
+      const now = Date.now();
+      const diff = expiration - now;
+
+      if (diff <= 0) {
+        setTimeRemaining('Expired');
+        return;
+      }
+
+      const minutes = Math.floor(diff / 60000);
+      const seconds = Math.floor((diff % 60000) / 1000);
+      setTimeRemaining(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => {
+      clearInterval(interval);
+      setTimeRemaining('');
+    };
+  }, [debugSession]);
+  // Detect org type from instance URL
+  const getOrgType = () => {
+    if (!instanceUrl) return 'NOT CONNECTED';
+    const url = instanceUrl.toLowerCase();
+    if (url.includes('sandbox') || url.includes('.cs')) return 'SANDBOX';
+    if (url.includes('scratch')) return 'SCRATCH ORG';
+    if (url.includes('develop')) return 'DEVELOPER';
+    return 'PRODUCTION';
+  };
+
+  const orgType = getOrgType();
+
+  return (
   <div className="space-y-12 max-w-2xl mx-auto text-black">
     <div className="space-y-4">
-      <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-gray-100 text-[9px] font-black uppercase tracking-widest text-gray-500">
-        <Terminal size={12} />
-        <span>Instance: PRD-NA-42</span>
+      <div className="flex flex-wrap gap-2">
+        <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-gray-100 text-[9px] font-black uppercase tracking-widest text-gray-500">
+          <Terminal size={12} />
+          <span>{orgType}</span>
+        </div>
+        {userInfo?.name && (
+          <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-blue-50 text-[9px] font-black uppercase tracking-widest text-blue-700">
+            <User size={12} />
+            <span>{userInfo.name}</span>
+          </div>
+        )}
       </div>
       <h1 className="text-5xl font-black tracking-tighter uppercase leading-[0.9] text-black">Analyze<br/>System Logs</h1>
     </div>
 
-    <button 
-      onClick={onFetch}
-      disabled={isFetching}
-      className="flex items-center justify-center min-w-[200px] h-14 bg-black text-white rounded-full text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] active:scale-[0.98] group disabled:opacity-50"
-    >
-      {isFetching ? <RotateCcw className="animate-spin mr-2" size={16} /> : (
-        <>
-          <span>Fetch Session Logs</span>
-          <ChevronRight size={16} className="ml-2 group-hover:translate-x-1 transition-transform" />
-        </>
+    <div className="flex gap-3 flex-wrap">
+      <button 
+        onClick={onFetch}
+        disabled={isFetching}
+        className="flex items-center justify-center min-w-[200px] h-14 bg-black text-white rounded-full text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] active:scale-[0.98] group disabled:opacity-50"
+      >
+        {isFetching ? <RotateCcw className="animate-spin mr-2" size={16} /> : (
+          <>
+            <span>Fetch Logs</span>
+            <ChevronRight size={16} className="ml-2 group-hover:translate-x-1 transition-transform" />
+          </>
+        )}
+      </button>
+
+      {debugSession ? (
+        <div className="flex items-center gap-3">
+          <div className="flex items-center space-x-3 px-6 h-14 border-2 border-green-500 bg-green-50 rounded-full flex-1">
+            <Clock size={16} className="text-green-600" />
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase tracking-widest text-green-600">Debug Active</span>
+              <span className="text-sm font-black text-green-700">{timeRemaining}</span>
+            </div>
+          </div>
+          <button 
+            onClick={onStopDebugSession}
+            disabled={isStoppingDebugSession}
+            className="flex items-center justify-center w-14 h-14 bg-red-600 text-white rounded-full text-xs font-bold transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50"
+            title="Stop debug session"
+          >
+            {isStoppingDebugSession ? <RotateCcw className="animate-spin" size={16} /> : <X size={16} />}
+          </button>
+        </div>
+      ) : (
+        <button 
+          onClick={onCreateDebugSession}
+          disabled={isCreatingDebugSession || !userInfo}
+          className="flex items-center justify-center min-w-[200px] h-14 bg-green-600 text-white rounded-full text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] active:scale-[0.98] group disabled:opacity-50"
+        >
+          {isCreatingDebugSession ? <RotateCcw className="animate-spin mr-2" size={16} /> : (
+            <>
+              <Play size={16} className="mr-2" />
+              <span>Enable Debug (30m)</span>
+            </>
+          )}
+        </button>
       )}
-    </button>
+    </div>
 
     <div className="grid grid-cols-2 gap-4">
       {metrics.map((m, i) => (
@@ -44,7 +139,26 @@ const DashboardView: React.FC<{
       <div className="space-y-6 pt-4 text-black">
         <div className="flex items-center justify-between border-b-2 border-black pb-4">
           <h2 className="text-xl font-black uppercase tracking-tight">Records</h2>
-          <span className="text-[10px] font-bold border border-black px-3 py-1 rounded-full uppercase">{logs.length} Total</span>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-bold border border-black px-3 py-1 rounded-full uppercase">{logs.length} Total</span>
+            {onDeleteAllLogs && (
+              <button 
+                onClick={onDeleteAllLogs}
+                disabled={isDeletingAllLogs || isFetching}
+                className="flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-full text-[10px] font-bold tracking-wider uppercase transition-all hover:bg-red-700 active:scale-95 disabled:opacity-50"
+                title="Delete all log records using Bulk API"
+              >
+                {isDeletingAllLogs ? (
+                  <RotateCcw className="animate-spin" size={14} />
+                ) : (
+                  <>
+                    <Trash2 size={14} />
+                    <span>Delete All</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
         
         <div className="overflow-x-auto pb-20">
@@ -97,6 +211,7 @@ const DashboardView: React.FC<{
       </div>
     )}
   </div>
-);
+  );
+};
 
 export default DashboardView;

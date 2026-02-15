@@ -1,6 +1,4 @@
-// background.ts
-
-console.log('[SF-LOG-ANALYZER-BG] Background script loading...');
+// background.ts - Salesforce Debug Log Chrome Extension
 
 interface SalesforceData {
   instanceUrl: string;
@@ -9,202 +7,130 @@ interface SalesforceData {
   isAuthenticated: boolean;
 }
 
-// CRITICAL: Allow the Iframe (untrusted context) to access session storage
 const chromeAPI = (globalThis as any).chrome;
+
+// Allow iframe (untrusted context) to access session storage
 if (chromeAPI?.storage?.session?.setAccessLevel) {
   chromeAPI.storage.session.setAccessLevel({ 
     accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' 
   });
-  console.log('[SF-LOG-ANALYZER-BG] Storage access level set');
 }
 
 // Keep service worker alive with periodic heartbeat
 let keepAliveInterval: any = null;
 const startKeepAlive = () => {
   if (keepAliveInterval) return;
-  keepAliveInterval = setInterval(() => {
-    console.log('[SF-LOG-ANALYZER-BG] Keepalive ping');
-  }, 20000); // Every 20 seconds
+  keepAliveInterval = setInterval(() => {}, 20000);
 };
 
-const stopKeepAlive = () => {
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
+startKeepAlive();
+
+// Helper: Clean and transform Salesforce domain for API calls
+const cleanDomain = (domain: string): string => {
+  const cleaned = domain.startsWith('.') ? domain.substring(1) : domain;
+  return cleaned
+    .replace(/\.lightning\.force\./, '.my.salesforce.') // Avoid HTTP redirects
+    .replace(/\.mcas\.ms$/, ''); // Remove Microsoft Defender suffix
+};
+
+// Helper: Save session data to storage with hostname-specific key
+const saveSessionData = (data: SalesforceData) => {
+  const hostname = data.instanceUrl.split('//')[1];
+  const storageKey = `sfData_${hostname}`;
+  chromeAPI.storage.session.set({ [storageKey]: data });
+};
+
+// Helper: Get hostname from URL
+const getHostnameFromUrl = (url: string): string | null => {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname;
+  } catch {
+    return null;
   }
 };
 
-// Start keepalive on startup
-startKeepAlive();
-
 const chromeRuntime = (globalThis as any).chrome?.runtime;
 if (chromeRuntime) {
-  console.log('[SF-LOG-ANALYZER-BG] Setting up message listeners...');
-  
   chromeRuntime.onMessage.addListener(
     (request: any, sender: any, sendResponse: (response?: any) => void) => {
-      console.log('[SF-LOG-ANALYZER-BG] Message received:', request.type);
-      
-      // Keep service worker alive during message handling
       startKeepAlive();
       
       if (request.type === 'PAGE_LOADED_ON_SF') {
-        console.log('[SF-LOG-ANALYZER-BG] Received PAGE_LOADED_ON_SF message');
         const senderTab = sender.tab;
-        const chromeAPI = (globalThis as any).chrome;
-        
-        if (!chromeAPI?.cookies) {
-          console.error('[SF-LOG-ANALYZER-BG] Chrome cookies API not available');
-          return;
-        }
-        if (!senderTab?.url) {
-          console.error('[SF-LOG-ANALYZER-BG] Sender tab URL not available');
-          return;
-        }
+        if (!chromeAPI?.cookies || !senderTab?.url) return false;
 
         const requestUrl = senderTab.url;
         const cookieStoreId = senderTab.cookieStoreId;
-        console.log('[SF-LOG-ANALYZER-BG] Page URL:', requestUrl);
-        console.log('[SF-LOG-ANALYZER-BG] Cookie Store ID:', cookieStoreId);
 
-        // Helper function to fetch and save credentials
-        // Uses Salesforce Inspector Reloaded's proven two-step cookie lookup:
-        // 1. Get sid cookie from current page to extract OrgID
-        // 2. Search across multiple domains for cookie with same OrgID
+        // Two-step cookie lookup (inspired by Salesforce Inspector Reloaded):
+        // 1. Extract OrgID from current page cookie
+        // 2. Search all Salesforce domains for matching session
         const fetchAndSaveCredentials = (retryCount = 0) => {
           try {
             const pageUrl = new URL(requestUrl);
             const currentDomain = pageUrl.hostname;
-            console.log('[SF-LOG-ANALYZER-BG] Current domain:', currentDomain);
-
-            // STEP 1: Get the sid cookie from current page to extract OrgID
-            console.log('[SF-LOG-ANALYZER-BG] Step 1: Fetching sid cookie from current page (attempt ' + (retryCount + 1) + ')...');
             chromeAPI.cookies.get(
               { url: requestUrl, name: 'sid', storeId: cookieStoreId },
               (currentCookie: any) => {
-                if (chromeAPI.runtime.lastError) {
-                  console.error('[SF-LOG-ANALYZER-BG] Cookie fetch error:', chromeAPI.runtime.lastError);
-                  return;
-                }
-
-                // If on *.mcas.ms (Microsoft Defender) or no cookie found
-                if (!currentCookie || currentDomain.endsWith('.mcas.ms')) {
-                  console.warn('[SF-LOG-ANALYZER-BG] No sid cookie or on special domain');
-                  
-                  // Retry up to 3 times
+                if (chromeAPI.runtime.lastError || !currentCookie || currentDomain.endsWith('.mcas.ms')) {
                   if (retryCount < 2) {
-                    console.log('[SF-LOG-ANALYZER-BG] Retrying in ' + ((retryCount + 1) * 500) + 'ms...');
                     setTimeout(() => fetchAndSaveCredentials(retryCount + 1), (retryCount + 1) * 500);
                     return;
                   }
-                  
-                  // Save fallback data with current domain
-                  const sfData: SalesforceData = {
+                  saveSessionData({
                     instanceUrl: pageUrl.origin,
                     sessionId: null,
                     timestamp: Date.now(),
                     isAuthenticated: false,
-                  };
-                  console.log('[SF-LOG-ANALYZER-BG] Saving fallback session data');
-                  chromeAPI.storage.session.set({ sfData });
+                  });
                   return;
                 }
 
                 // Extract OrgID (first part before "!" in session ID)
                 const [orgId] = currentCookie.value.split('!');
-                console.log('[SF-LOG-ANALYZER-BG] ✓ Extracted OrgID:', orgId);
-                console.log('[SF-LOG-ANALYZER-BG] Current cookie domain:', currentCookie.domain);
 
-                // STEP 2: Search across Salesforce domains for cookie with same OrgID
-                // This handles visualforce/lightning/my domain variations
+                // Search across all Salesforce domains for matching session
                 const orderedDomains = [
-                  'salesforce.com',
-                  'cloudforce.com', 
-                  'salesforce.mil',
-                  'cloudforce.mil',
-                  'sfcrmproducts.cn',
-                  'force.com'
+                  'salesforce.com', 'cloudforce.com', 'salesforce.mil',
+                  'cloudforce.mil', 'sfcrmproducts.cn', 'force.com'
                 ];
-
-                console.log('[SF-LOG-ANALYZER-BG] Step 2: Searching across domains for matching OrgID...');
                 
                 let foundSession = false;
                 let domainsChecked = 0;
                 
                 orderedDomains.forEach((domain) => {
                   chromeAPI.cookies.getAll(
-                    { name: 'sid', domain: domain, secure: true, storeId: cookieStoreId },
+                    { name: 'sid', domain, secure: true, storeId: cookieStoreId },
                     (cookies: any[]) => {
                       domainsChecked++;
                       
-                      if (!foundSession && cookies && cookies.length > 0) {
-                        console.log('[SF-LOG-ANALYZER-BG] Found', cookies.length, 'cookie(s) on', domain);
-                        
-                        // Find cookie with matching OrgID (exclude help.salesforce.com)
+                      if (!foundSession && cookies?.length) {
                         const sessionCookie = cookies.find((c: any) => 
                           c.value.startsWith(orgId + '!') && c.domain !== 'help.salesforce.com'
                         );
                         
                         if (sessionCookie && !foundSession) {
                           foundSession = true;
-                          console.log('[SF-LOG-ANALYZER-BG] ✓ Found matching session cookie!');
-                          console.log('[SF-LOG-ANALYZER-BG] Cookie domain:', sessionCookie.domain);
-                          console.log('[SF-LOG-ANALYZER-BG] Session ID (first 20 chars):', sessionCookie.value.substring(0, 20) + '...');
+                          const instanceHostname = cleanDomain(sessionCookie.domain);
 
-                          // Remove leading dot from cookie domain
-                          const cleanDomain = sessionCookie.domain.startsWith('.')
-                            ? sessionCookie.domain.substring(1)
-                            : sessionCookie.domain;
-                          
-                          // Transform domain: .lightning.force. -> .my.salesforce.
-                          // This avoids HTTP redirects that would drop Authorization header
-                          let instanceHostname = cleanDomain
-                            .replace(/\.lightning\.force\./, '.my.salesforce.')
-                            .replace(/\.mcas\.ms$/, '');
-                          
-                          console.log('[SF-LOG-ANALYZER-BG] Instance hostname:', instanceHostname);
-
-                          const sfData: SalesforceData = {
+                          saveSessionData({
                             instanceUrl: `https://${instanceHostname}`,
                             sessionId: sessionCookie.value,
                             timestamp: Date.now(),
                             isAuthenticated: true,
-                          };
-
-                          console.log('[SF-LOG-ANALYZER-BG] ✓ Saving complete session data:', {
-                            instanceUrl: sfData.instanceUrl,
-                            hasSessionId: true,
-                            sessionIdPrefix: sfData.sessionId?.substring(0, 10) + '...',
-                            isAuthenticated: true
-                          });
-
-                          chromeAPI.storage.session.set({ sfData }, () => {
-                            if (chromeAPI.runtime.lastError) {
-                              console.error('[SF-LOG-ANALYZER-BG] Storage set error:', chromeAPI.runtime.lastError);
-                            } else {
-                              console.log('[SF-LOG-ANALYZER-BG] ✓ Session data saved successfully');
-                            }
                           });
                         }
                       }
                       
-                      // If all domains checked and nothing found, save fallback
+                      // Fallback: use current page cookie if no match found
                       if (domainsChecked === orderedDomains.length && !foundSession) {
-                        console.warn('[SF-LOG-ANALYZER-BG] No matching session cookie found across all domains');
-                        console.warn('[SF-LOG-ANALYZER-BG] Using current cookie as fallback');
-                        
-                        const cleanDomain = currentCookie.domain.startsWith('.')
-                          ? currentCookie.domain.substring(1)
-                          : currentCookie.domain;
-                        
-                        const sfData: SalesforceData = {
-                          instanceUrl: `https://${cleanDomain}`,
+                        saveSessionData({
+                          instanceUrl: `https://${cleanDomain(currentCookie.domain)}`,
                           sessionId: currentCookie.value,
                           timestamp: Date.now(),
                           isAuthenticated: true,
-                        };
-                        
-                        chromeAPI.storage.session.set({ sfData });
+                        });
                       }
                     }
                   );
@@ -212,7 +138,7 @@ if (chromeRuntime) {
               }
             );
           } catch (error) {
-            console.error('[SF-LOG-ANALYZER-BG] Error processing Salesforce page:', error);
+            // Error processing Salesforce page
           }
         };
 
@@ -222,30 +148,26 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'GET_SF_CREDENTIALS') {
-        console.log('[SF-LOG-ANALYZER-BG] GET_SF_CREDENTIALS request received');
-        const chromeAPI = (globalThis as any).chrome;
-        chromeAPI.storage.session.get(['sfData'], (result: any) => {
-          console.log('[SF-LOG-ANALYZER-BG] Credentials retrieved from storage:', {
-            hasData: !!result.sfData,
-            instanceUrl: result.sfData?.instanceUrl,
-            hasSessionId: !!result.sfData?.sessionId,
-            isAuthenticated: result.sfData?.isAuthenticated
-          });
-          sendResponse({ success: true, data: result.sfData || null });
+        const hostname = request.hostname || getHostnameFromUrl(sender?.tab?.url || '');
+        
+        if (!hostname) {
+          sendResponse({ success: true, data: null });
+          return true;
+        }
+        
+        // Look for session data for this specific hostname
+        const storageKey = `sfData_${hostname}`;
+        chromeAPI.storage.session.get([storageKey], (result: any) => {
+          sendResponse({ success: true, data: result[storageKey] || null });
         });
-        return true; // Keep channel open
+        return true;
       }
 
       if (request.type === 'FORCE_REFRESH_CREDENTIALS') {
-        console.log('[SF-LOG-ANALYZER-BG] FORCE_REFRESH_CREDENTIALS request received');
-        // Query for active Salesforce tabs and re-fetch credentials
-        const chromeAPI = (globalThis as any).chrome;
         chromeAPI.tabs.query({ active: true, currentWindow: true }, (tabs: any[]) => {
-          if (tabs && tabs[0]) {
-            const tab = tabs[0];
-            console.log('[SF-LOG-ANALYZER-BG] Forcing credential refresh for tab:', tab.url);
-            // Simulate the PAGE_LOADED_ON_SF flow
-            chromeAPI.runtime.sendMessage({ type: 'PAGE_LOADED_ON_SF' }, { tab });
+          if (tabs?.[0]?.url) {
+            // Re-inject content script to trigger credential fetch
+            chromeAPI.tabs.reload(tabs[0].id);
           }
           sendResponse({ success: true });
         });
@@ -253,86 +175,264 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'FETCH_USER_INFO') {
-        const apiUrl = `${request.instanceUrl}/services/data/v65.0/chatter/users/me`;
-        console.log('[SF-LOG-ANALYZER-BG] FETCH_USER_INFO request');
-        console.log('[SF-LOG-ANALYZER-BG] API URL:', apiUrl);
-        console.log('[SF-LOG-ANALYZER-BG] Session ID (first 15 chars):', request.sessionId?.substring(0, 15) + '...');
-        
-        fetch(apiUrl, {
+        fetch(`${request.instanceUrl}/services/data/v65.0/chatter/users/me`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
           }
         })
-        .then(res => {
-          console.log('[SF-LOG-ANALYZER-BG] User info response status:', res.status);
-          if (!res.ok) {
-            return res.text().then(text => {
-              console.error('[SF-LOG-ANALYZER-BG] User info error response:', text?.substring(0, 200));
-              throw new Error(`HTTP ${res.status}: ${text?.substring(0, 100) || 'Unknown error'}`);
-            });
-          }
-          return res.json();
-        })
-        .then(data => {
-          console.log('[SF-LOG-ANALYZER-BG] ✓ User info fetched:', data.name);
-          sendResponse({ success: true, data });
-        })
-        .catch(err => {
-          console.error('[SF-LOG-ANALYZER-BG] User info fetch error:', err.message);
-          sendResponse({ success: false, error: err.message });
-        });
+        .then(res => res.ok ? res.json() : res.text().then(text => {
+          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+        }))
+        .then(data => sendResponse({ success: true, data }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
         
-        return true; // Keep channel open
+        return true;
       }
 
       if (request.type === 'FETCH_LOGS') {
-        const soqlQuery = 'SELECT Id, LogLength, Operation, Status, StartTime FROM ApexLog ORDER BY StartTime DESC LIMIT 100';
-        const apiUrl = `${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(soqlQuery)}`;
-        console.log('[SF-LOG-ANALYZER-BG] FETCH_LOGS request');
-        console.log('[SF-LOG-ANALYZER-BG] API URL:', apiUrl);
-
-        fetch(apiUrl, {
+        const query = 'SELECT Id, LogLength, Operation, Status, StartTime FROM ApexLog ORDER BY StartTime DESC LIMIT 100';
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
           }
         })
+        .then(res => res.ok ? res.json() : res.text().then(text => {
+          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+        }))
+        .then(data => sendResponse({ success: true, data }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+        
+        return true;
+      }
+
+      if (request.type === 'CHECK_DEBUG_SESSION') {
+        // Check for active TraceFlag for the current user
+        const query = `SELECT Id, ExpirationDate, DebugLevelId, TracedEntityId FROM TraceFlag WHERE TracedEntityId = '${request.userId}' AND ExpirationDate > ${new Date().toISOString()} ORDER BY ExpirationDate DESC LIMIT 1`;
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+          headers: { 
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Accept': 'application/json'
+          }
+        })
+        .then(res => res.ok ? res.json() : res.text().then(text => {
+          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+        }))
+        .then(data => {
+          const activeSession = data.records && data.records.length > 0 ? data.records[0] : null;
+          sendResponse({ success: true, data: activeSession });
+        })
+        .catch(err => sendResponse({ success: false, error: err.message }));
+        
+        return true;
+      }
+
+      if (request.type === 'CREATE_DEBUG_SESSION') {
+        // Step 1: Check if a DebugLevel exists, or create one
+        const checkDebugLevel = fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent("SELECT Id FROM DebugLevel WHERE DeveloperName = 'SF_LOG_ANALYZER_DEBUG' LIMIT 1")}`, {
+          headers: { 
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Accept': 'application/json'
+          }
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.records && data.records.length > 0) {
+            return data.records[0].Id;
+          }
+          // Create a new DebugLevel
+          return fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel`, {
+            method: 'POST',
+            headers: { 
+              'Authorization': `Bearer ${request.sessionId}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              DeveloperName: 'SF_LOG_ANALYZER_DEBUG',
+              MasterLabel: 'SF Log Analyzer Debug',
+              ApexCode: 'FINEST',
+              ApexProfiling: 'FINEST',
+              Callout: 'INFO',
+              Database: 'INFO',
+              System: 'DEBUG',
+              Validation: 'INFO',
+              Visualforce: 'INFO',
+              Workflow: 'INFO'
+            })
+          })
+          .then(res => res.json())
+          .then(result => result.id);
+        });
+
+        // Step 2: Create TraceFlag with 30-minute expiration
+        checkDebugLevel
+          .then(debugLevelId => {
+            const expirationDate = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+            return fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag`, {
+              method: 'POST',
+              headers: { 
+                'Authorization': `Bearer ${request.sessionId}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                TracedEntityId: request.userId,
+                DebugLevelId: debugLevelId,
+                ExpirationDate: expirationDate,
+                LogType: 'USER_DEBUG'
+              })
+            });
+          })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+        
+        return true;
+      }
+
+      if (request.type === 'DELETE_DEBUG_SESSION') {
+        // Delete the TraceFlag to stop the debug session
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag/${request.traceFlagId}`, {
+          method: 'DELETE',
+          headers: { 
+            'Authorization': `Bearer ${request.sessionId}`
+          }
+        })
         .then(res => {
-          console.log('[SF-LOG-ANALYZER-BG] Logs response status:', res.status);
-          if (!res.ok) {
+          if (res.status === 204) {
+            sendResponse({ success: true });
+          } else {
             return res.text().then(text => {
-              console.error('[SF-LOG-ANALYZER-BG] Logs error response:', text?.substring(0, 200));
-              throw new Error(`HTTP ${res.status}: ${text?.substring(0, 100) || 'Unknown error'}`);
+              throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
             });
           }
-          return res.json();
         })
-        .then(data => {
-          console.log('[SF-LOG-ANALYZER-BG] ✓ Logs fetched:', data.records?.length || 0, 'records');
-          sendResponse({ success: true, data });
-        })
-        .catch(err => {
-          console.error('[SF-LOG-ANALYZER-BG] Logs fetch error:', err.message);
-          sendResponse({ success: false, error: err.message });
-        });
+        .catch(err => sendResponse({ success: false, error: err.message }));
         
-        return true; // Keep channel open
+        return true;
+      }
+
+      if (request.type === 'DELETE_ALL_LOGS') {
+        // Use Bulk API v2 for efficient mass deletion
+        // Step 1: Fetch all log IDs
+        const query = 'SELECT Id FROM ApexLog';
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+          headers: { 
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Accept': 'application/json'
+          }
+        })
+        .then(res => res.ok ? res.json() : res.text().then(text => {
+          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+        }))
+        .then(data => {
+          if (!data.records || data.records.length === 0) {
+            sendResponse({ success: true, deletedCount: 0 });
+            return Promise.resolve();
+          }
+          
+          const ids = data.records.map((r: any) => r.Id);
+          
+          // Step 2: Create Bulk API v2 delete job
+          return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest`, {
+            method: 'POST',
+            headers: { 
+              'Authorization': `Bearer ${request.sessionId}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              operation: 'delete',
+              object: 'ApexLog',
+              contentType: 'CSV',
+              lineEnding: 'LF'
+            })
+          })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`Create job failed: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(job => {
+            // Step 3: Upload CSV data with IDs to delete
+            const csvData = 'Id\n' + ids.join('\n');
+            
+            return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest/${job.id}/batches`, {
+              method: 'PUT',
+              headers: { 
+                'Authorization': `Bearer ${request.sessionId}`,
+                'Content-Type': 'text/csv'
+              },
+              body: csvData
+            })
+            .then(res => {
+              if (!res.ok) {
+                return res.text().then(text => {
+                  throw new Error(`Upload CSV failed: ${text.substring(0, 100) || 'Unknown error'}`);
+                });
+              }
+              return job;
+            })
+            .then(job => {
+              // Step 4: Close the job to start processing
+              return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest/${job.id}`, {
+                method: 'PATCH',
+                headers: { 
+                  'Authorization': `Bearer ${request.sessionId}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ state: 'UploadComplete' })
+              })
+              .then(res => res.ok ? res.json() : res.text().then(text => {
+                throw new Error(`Close job failed: ${text.substring(0, 100) || 'Unknown error'}`);
+              }))
+              .then(() => ({ jobId: job.id, totalRecords: ids.length }));
+            });
+          })
+          .then(({ jobId, totalRecords }) => {
+            // Step 5: Poll for job completion (max 30 seconds)
+            const pollJob = (attempt = 0): Promise<any> => {
+              if (attempt > 30) {
+                throw new Error('Bulk delete job timed out');
+              }
+              
+              return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest/${jobId}`, {
+                headers: { 
+                  'Authorization': `Bearer ${request.sessionId}`,
+                  'Accept': 'application/json'
+                }
+              })
+              .then(res => res.ok ? res.json() : res.text().then(text => {
+                throw new Error(`Poll job failed: ${text.substring(0, 100) || 'Unknown error'}`);
+              }))
+              .then(jobStatus => {
+                if (jobStatus.state === 'JobComplete') {
+                  return { 
+                    success: true, 
+                    deletedCount: totalRecords,
+                    processedRecords: jobStatus.numberRecordsProcessed,
+                    failedRecords: jobStatus.numberRecordsFailed
+                  };
+                } else if (jobStatus.state === 'Failed' || jobStatus.state === 'Aborted') {
+                  throw new Error(`Bulk job ${jobStatus.state.toLowerCase()}: ${jobStatus.errorMessage || 'Unknown error'}`);
+                } else {
+                  // Job still processing, wait and retry
+                  return new Promise(resolve => setTimeout(resolve, 1000))
+                    .then(() => pollJob(attempt + 1));
+                }
+              });
+            };
+            
+            return pollJob();
+          })
+          .then(result => sendResponse(result));
+        })
+        .catch(err => sendResponse({ success: false, error: err.message }));
+        
+        return true;
       }
     }
   );
   
-  // Ensure service worker is ready on install/update
-  chromeRuntime.onInstalled.addListener(() => {
-    console.log('[SF-LOG-ANALYZER-BG] Extension installed/updated - service worker ready');
-    startKeepAlive();
-  });
-  
-  // Wake up on startup
-  chromeRuntime.onStartup.addListener(() => {
-    console.log('[SF-LOG-ANALYZER-BG] Browser started - service worker ready');
-    startKeepAlive();
-  });
+  chromeRuntime.onInstalled.addListener(startKeepAlive);
+  chromeRuntime.onStartup.addListener(startKeepAlive);
 }
-
-console.log('[SF-LOG-ANALYZER-BG] ✓ All listeners registered');

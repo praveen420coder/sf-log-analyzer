@@ -26,60 +26,77 @@ export function useExtensionLogAPI() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [debugSession, setDebugSession] = useState<any>(null);
+  const [isCreatingDebugSession, setIsCreatingDebugSession] = useState(false);
+  const [isStoppingDebugSession, setIsStoppingDebugSession] = useState(false);
+  const [isDeletingAllLogs, setIsDeletingAllLogs] = useState(false);
+  
+  // Get hostname from URL hash (passed by content-ui.tsx)
+  const [currentHostname, setCurrentHostname] = useState<string>(() => {
+    try {
+      const hash = window.location.hash;
+      if (hash && hash.includes('hostname=')) {
+        const hostnameParam = hash.split('hostname=')[1]?.split('&')[0];
+        if (hostnameParam) {
+          const decoded = decodeURIComponent(hostnameParam);
+          return decoded;
+        }
+      }
+    } catch (e) {
+      // Failed to extract hostname
+    }
+    return '';
+  });
 
   const handleCredentials = useCallback((data: any) => {
-    console.log('[SF-LOG-ANALYZER-UI] handleCredentials called:', {
-      hasData: !!data,
-      hasSessionId: !!data?.sessionId,
-      instanceUrl: data?.instanceUrl,
-      isAuthenticated: data?.isAuthenticated
-    });
     if (data?.sessionId) {
-      console.log('[SF-LOG-ANALYZER-UI] ✓ Valid credentials received');
       setInstanceUrl(data.instanceUrl);
       setSessionId(data.sessionId);
       setError(null);
       setIsLoading(false);
+      
+      // Only set hostname from instanceUrl if we don't already have it
+      if (!currentHostname) {
+        try {
+          const url = new URL(data.instanceUrl);
+          setCurrentHostname(url.hostname);
+        } catch (e) {
+          // Failed to extract hostname
+        }
+      }
     } else {
-      // Don't immediately set a hard error if data is just null; 
-      // the background script might still be searching for cookies.
-      console.log('[SF-LOG-ANALYZER-UI] ✗ No session ID found in credentials');
       setInstanceUrl(null);
       setSessionId(null);
       setUserInfo(null);
     }
-  }, []);
+  }, [currentHostname]);
 
   useEffect(() => {
-    console.log('[SF-LOG-ANALYZER-UI] Extension API hook initializing...');
     const { chrome } = (globalThis as any);
-    if (!chrome?.runtime?.sendMessage) {
-      console.error('[SF-LOG-ANALYZER-UI] ✗ Chrome runtime not available');
-      return;
-    }
+    if (!chrome?.runtime?.sendMessage) return;
 
     const onSessionValid = (instUrl: string, sessId: string) => {
-      console.log('[SF-LOG-ANALYZER-UI] Session valid, fetching user info...');
       chrome.runtime.sendMessage(
         { type: 'FETCH_USER_INFO', instanceUrl: instUrl, sessionId: sessId },
         (response: any) => {
           if (response?.success) {
-            console.log('[SF-LOG-ANALYZER-UI] ✓ User info received:', response.data?.name);
             setUserInfo(response.data);
-          } else {
-            console.warn('[SF-LOG-ANALYZER-UI] ⚠ User info fetch failed (non-critical):', response?.error);
-            // Don't set error - user info is optional, credentials are what matter
           }
         }
       );
     };
 
-    const checkCredentials = (attempt = 1, maxAttempts = 10) => {
-      console.log(`[SF-LOG-ANALYZER-UI] Checking credentials (attempt ${attempt}/${maxAttempts})...`);
+    const checkCredentials = (attempt = 1, maxAttempts = 5) => {
+      if (!currentHostname) {
+        setIsLoading(false);
+        setError('Configuration error: hostname not available');
+        return;
+      }
       
-      chrome.runtime.sendMessage({ type: 'GET_SF_CREDENTIALS' }, (response: any) => {
+      chrome.runtime.sendMessage(
+        { type: 'GET_SF_CREDENTIALS', hostname: currentHostname },
+        (response: any) => {
         if (chrome.runtime.lastError) {
-          console.error('[SF-LOG-ANALYZER-UI] Runtime error:', chrome.runtime.lastError);
           if (attempt < maxAttempts) {
             setTimeout(() => checkCredentials(attempt + 1, maxAttempts), attempt * 200);
           } else {
@@ -89,43 +106,30 @@ export function useExtensionLogAPI() {
           return;
         }
         
-        console.log('[SF-LOG-ANALYZER-UI] Credentials response:', {
-          success: response?.success,
-          hasData: !!response?.data,
-          hasSessionId: !!response?.data?.sessionId,
-          attempt
-        });
-        
         if (response?.success && response.data?.sessionId) {
-          // Success! We have credentials
-          console.log('[SF-LOG-ANALYZER-UI] ✓ Credentials found on attempt', attempt);
           handleCredentials(response.data);
           onSessionValid(response.data.instanceUrl, response.data.sessionId);
         } else if (attempt < maxAttempts) {
-          // Retry after a delay
-          console.log(`[SF-LOG-ANALYZER-UI] No credentials yet, retrying in ${attempt * 200}ms...`);
-          setTimeout(() => checkCredentials(attempt + 1, maxAttempts), attempt * 200);
+          setTimeout(() => checkCredentials(attempt + 1, maxAttempts), attempt * 300);
         } else {
-          console.warn('[SF-LOG-ANALYZER-UI] ✗ Max retry attempts reached, no credentials found');
           setIsLoading(false);
           setError('Unable to detect Salesforce session. Click "Retry" or refresh the page.');
         }
       });
     };
 
-    // Start credential check with retry logic
+    // Start credential check
     checkCredentials();
 
-    // 2. Listen for changes - This is the primary driver
-    console.log('[SF-LOG-ANALYZER-UI] Setting up storage change listener...');
+    // Listen for session storage changes ONLY for this specific hostname
     const storageListener = (changes: any) => {
-      console.log('[SF-LOG-ANALYZER-UI] Storage changed:', Object.keys(changes));
-      if (changes.sfData) {
-        console.log('[SF-LOG-ANALYZER-UI] sfData updated:', {
-          hasNewValue: !!changes.sfData.newValue,
-          hasOldValue: !!changes.sfData.oldValue
-        });
-        const newData = changes.sfData.newValue;
+      if (!currentHostname) {
+        return;
+      }
+      
+      const storageKey = `sfData_${currentHostname}`;
+      if (changes[storageKey]?.newValue) {
+        const newData = changes[storageKey].newValue;
         handleCredentials(newData);
         if (newData?.sessionId) {
           onSessionValid(newData.instanceUrl, newData.sessionId);
@@ -135,11 +139,9 @@ export function useExtensionLogAPI() {
 
     chrome.storage.onChanged.addListener(storageListener);
     return () => chrome.storage.onChanged.removeListener(storageListener);
-  }, [handleCredentials]);
+  }, [handleCredentials, currentHostname]);
 
-  // Manual refresh function to force re-fetch of credentials
   const refreshCredentials = useCallback(() => {
-    console.log('[SF-LOG-ANALYZER-UI] Manual refresh triggered');
     setIsLoading(true);
     setError(null);
     
@@ -150,40 +152,41 @@ export function useExtensionLogAPI() {
       return;
     }
 
-    // Trigger background to re-fetch from current page
-    chrome.runtime.sendMessage({ type: 'FORCE_REFRESH_CREDENTIALS' }, (response: any) => {
-      console.log('[SF-LOG-ANALYZER-UI] Force refresh response:', response);
-      // Wait a bit then check for credentials
-      setTimeout(() => {
-        chrome.runtime.sendMessage({ type: 'GET_SF_CREDENTIALS' }, (resp: any) => {
-          if (resp?.success && resp.data?.sessionId) {
-            handleCredentials(resp.data);
-            setIsLoading(false);
-          } else {
-            setError('Still unable to detect session. Make sure you are logged into Salesforce.');
-            setIsLoading(false);
-          }
-        });
-      }, 1000);
-    });
-  }, [handleCredentials]);
+    if (!currentHostname) {
+      setError('Configuration error: hostname not available');
+      setIsLoading(false);
+      return;
+    }
+
+    chrome.runtime.sendMessage({ type: 'FORCE_REFRESH_CREDENTIALS' });
+    
+    // Wait for page reload to complete
+    setTimeout(() => {
+      chrome.runtime.sendMessage(
+        { type: 'GET_SF_CREDENTIALS', hostname: currentHostname },
+        (resp: any) => {
+        if (resp?.success && resp.data?.sessionId) {
+          handleCredentials(resp.data);
+        } else {
+          setError('Unable to detect session. Make sure you are logged into Salesforce.');
+        }
+        setIsLoading(false);
+      });
+    }, 1500);
+  }, [handleCredentials, currentHostname]);
 
   const fetchLogs = useCallback(() => {
-    console.log('[SF-LOG-ANALYZER-UI] fetchLogs called');
     const { chrome } = (globalThis as any);
     if (!chrome?.runtime?.sendMessage) {
-      console.error('[SF-LOG-ANALYZER-UI] Chrome API not available');
       setError('Chrome extension API not available');
       return;
     }
 
     if (!instanceUrl || !sessionId) {
-      console.warn('[SF-LOG-ANALYZER-UI] Missing credentials:', { instanceUrl, hasSessionId: !!sessionId });
       setError('Waiting for Salesforce session...');
       return;
     }
 
-    console.log('[SF-LOG-ANALYZER-UI] Fetching logs from:', instanceUrl);
     setIsFetching(true);
     setError(null);
 
@@ -191,18 +194,11 @@ export function useExtensionLogAPI() {
       { type: 'FETCH_LOGS', instanceUrl, sessionId },
       (response: any) => {
         if (chrome.runtime.lastError) {
-          console.error('[SF-LOG-ANALYZER-UI] Runtime error:', chrome.runtime.lastError.message);
           setError(`Communication error: ${chrome.runtime.lastError.message}`);
           setIsFetching(false);
           return;
         }
 
-        console.log('[SF-LOG-ANALYZER-UI] Logs response:', {
-          success: response?.success,
-          recordCount: response?.data?.records?.length || 0
-        });
-
-        // ALWAYS finish fetching state inside the callback
         if (response?.success && response.data?.records) {
           const formattedLogs: Log[] = response.data.records.map((log: any) => ({
              id: log.Id,
@@ -213,10 +209,8 @@ export function useExtensionLogAPI() {
              Operation: log.Operation,
              LogLength: log.LogLength
           }));
-          console.log('[SF-LOG-ANALYZER-UI] ✓ Logs formatted:', formattedLogs.length);
           setLogs(formattedLogs);
         } else {
-          console.error('[SF-LOG-ANALYZER-UI] ✗ Logs fetch failed:', response?.error);
           setError(response?.error || 'Failed to fetch logs.');
         }
         setIsFetching(false);
@@ -224,5 +218,129 @@ export function useExtensionLogAPI() {
     );
   }, [instanceUrl, sessionId]);
 
-  return { logs, isFetching, error, instanceUrl, sessionId, userInfo, fetchLogs, refreshCredentials, isLoading };
+  const checkDebugSession = useCallback(() => {
+    const { chrome } = (globalThis as any);
+    if (!chrome?.runtime?.sendMessage || !instanceUrl || !sessionId || !userInfo?.id) {
+      return;
+    }
+
+    chrome.runtime.sendMessage(
+      { type: 'CHECK_DEBUG_SESSION', instanceUrl, sessionId, userId: userInfo.id },
+      (response: any) => {
+        if (response?.success && response.data) {
+          setDebugSession(response.data);
+        } else {
+          setDebugSession(null);
+        }
+      }
+    );
+  }, [instanceUrl, sessionId, userInfo]);
+
+  const createDebugSession = useCallback(() => {
+    const { chrome } = (globalThis as any);
+    if (!chrome?.runtime?.sendMessage || !instanceUrl || !sessionId || !userInfo?.id) {
+      setError('Cannot create debug session: missing credentials');
+      return;
+    }
+
+    setIsCreatingDebugSession(true);
+    setError(null);
+
+    chrome.runtime.sendMessage(
+      { type: 'CREATE_DEBUG_SESSION', instanceUrl, sessionId, userId: userInfo.id },
+      (response: any) => {
+        setIsCreatingDebugSession(false);
+        
+        if (response?.success) {
+          // Immediately check for the new session
+          setTimeout(() => checkDebugSession(), 1000);
+        } else {
+          setError(response?.error || 'Failed to create debug session');
+        }
+      }
+    );
+  }, [instanceUrl, sessionId, userInfo, checkDebugSession]);
+
+  // Check for existing debug session when userInfo is available
+  useEffect(() => {
+    if (userInfo?.id && instanceUrl && sessionId) {
+      checkDebugSession();
+      
+      // Periodically check debug session status (every 30 seconds)
+      const interval = setInterval(checkDebugSession, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [userInfo, instanceUrl, sessionId, checkDebugSession]);
+
+  const stopDebugSession = useCallback(() => {
+    const { chrome } = (globalThis as any);
+    if (!chrome?.runtime?.sendMessage || !instanceUrl || !sessionId || !debugSession?.Id) {
+      setError('Cannot stop debug session: missing credentials or session');
+      return;
+    }
+
+    setIsStoppingDebugSession(true);
+    setError(null);
+
+    chrome.runtime.sendMessage(
+      { type: 'DELETE_DEBUG_SESSION', instanceUrl, sessionId, traceFlagId: debugSession.Id },
+      (response: any) => {
+        setIsStoppingDebugSession(false);
+        
+        if (response?.success) {
+          // Clear the debug session and check status
+          setDebugSession(null);
+          setTimeout(() => checkDebugSession(), 1000);
+        } else {
+          setError(response?.error || 'Failed to stop debug session');
+        }
+      }
+    );
+  }, [instanceUrl, sessionId, debugSession, checkDebugSession]);
+
+  const deleteAllLogs = useCallback(() => {
+    const { chrome } = (globalThis as any);
+    if (!chrome?.runtime?.sendMessage || !instanceUrl || !sessionId) {
+      setError('Cannot delete logs: missing credentials');
+      return;
+    }
+
+    setIsDeletingAllLogs(true);
+    setError(null);
+
+    chrome.runtime.sendMessage(
+      { type: 'DELETE_ALL_LOGS', instanceUrl, sessionId },
+      (response: any) => {
+        setIsDeletingAllLogs(false);
+        
+        if (response?.success) {
+          // Clear logs and refresh
+          setLogs([]);
+          setTimeout(() => fetchLogs(), 500);
+        } else {
+          setError(response?.error || 'Failed to delete logs');
+        }
+      }
+    );
+  }, [instanceUrl, sessionId, fetchLogs]);
+
+  return { 
+    logs, 
+    isFetching, 
+    error, 
+    instanceUrl, 
+    sessionId, 
+    userInfo, 
+    fetchLogs, 
+    refreshCredentials, 
+    isLoading,
+    debugSession,
+    isCreatingDebugSession,
+    createDebugSession,
+    checkDebugSession,
+    stopDebugSession,
+    isStoppingDebugSession,
+    deleteAllLogs,
+    isDeletingAllLogs
+  };
 }
