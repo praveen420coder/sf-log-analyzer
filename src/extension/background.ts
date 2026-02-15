@@ -445,6 +445,195 @@ if (chromeRuntime) {
         
         return true;
       }
+
+      // Enhanced Debug Session Control handlers
+
+      if (request.type === 'CREATE_CUSTOM_DEBUG_LEVEL') {
+        // Create a custom debug level with specific settings
+        const debugLevel = {
+          DeveloperName: request.developerName,
+          MasterLabel: request.masterLabel,
+          ApexCode: request.settings.ApexCode,
+          ApexProfiling: request.settings.ApexProfiling,
+          Callout: request.settings.Callout,
+          Database: request.settings.Database,
+          System: request.settings.System,
+          Validation: request.settings.Validation,
+          Visualforce: request.settings.Visualforce,
+          Workflow: request.settings.Workflow,
+        };
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(debugLevel),
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'FIND_DEBUG_LEVEL_BY_NAME') {
+        const query = `SELECT Id, DeveloperName, MasterLabel, ApexCode, ApexProfiling, Callout, Database, System, Validation, Visualforce, Workflow FROM DebugLevel WHERE DeveloperName = '${request.developerName}' LIMIT 1`;
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query?q=${encodeURIComponent(query)}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data: data.records.length > 0 ? data.records[0] : null }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'UPDATE_DEBUG_LEVEL') {
+        const updates = {
+          ApexCode: request.settings.ApexCode,
+          ApexProfiling: request.settings.ApexProfiling,
+          Callout: request.settings.Callout,
+          Database: request.settings.Database,
+          System: request.settings.System,
+          Validation: request.settings.Validation,
+          Visualforce: request.settings.Visualforce,
+          Workflow: request.settings.Workflow,
+        };
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel/${request.debugLevelId}`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(updates),
+        })
+          .then(res => {
+            if (res.status === 204) {
+              sendResponse({ success: true });
+            } else {
+              return res.text().then(text => {
+                throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+              });
+            }
+          })
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'CREATE_TRACE_FLAG') {
+        const traceFlag = {
+          TracedEntityId: request.userId,
+          DebugLevelId: request.debugLevelId,
+          StartDate: new Date().toISOString(),
+          ExpirationDate: request.expirationDate,
+          LogType: 'USER_DEBUG',
+        };
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(traceFlag),
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'UPDATE_TRACE_FLAG') {
+        const updates = {
+          DebugLevelId: request.debugLevelId,
+          ExpirationDate: request.expirationDate,
+        };
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag/${request.traceFlagId}`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(updates),
+        })
+          .then(res => {
+            if (res.status === 204) {
+              sendResponse({ success: true });
+            } else {
+              return res.text().then(text => {
+                throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+              });
+            }
+          })
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_ALL_ACTIVE_DEBUG_SESSIONS') {
+        const now = new Date().toISOString();
+        const query = `SELECT Id, TracedEntityId, DebugLevelId, StartDate, ExpirationDate, LogType, TracedEntity.Name, DebugLevel.DeveloperName FROM TraceFlag WHERE ExpirationDate > ${now} ORDER BY ExpirationDate DESC`;
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query?q=${encodeURIComponent(query)}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data: data.records }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'SEARCH_USERS') {
+        const query = `SELECT Id, Name, Username, Email FROM User WHERE IsActive = true AND (Name LIKE '%${request.searchTerm}%' OR Username LIKE '%${request.searchTerm}%' OR Email LIKE '%${request.searchTerm}%') ORDER BY Name LIMIT 10`;
+
+        fetch(`${request.instanceUrl}/services/data/v58.0/query?q=${encodeURIComponent(query)}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data: data.records }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_DEBUG_LEVEL') {
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel/${request.debugLevelId}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
     }
   );
   

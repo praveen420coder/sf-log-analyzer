@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Terminal, RotateCcw, ChevronRight, Database, User, Play, Clock, X, Trash2 } from 'lucide-react';
+import { Terminal, RotateCcw, ChevronRight, Database, User, Play, Clock, X, Trash2, Settings } from 'lucide-react';
 import type { Log, Metric } from '../../types';
 
 const DashboardView: React.FC<{
@@ -17,7 +17,8 @@ const DashboardView: React.FC<{
   isStoppingDebugSession?: boolean;
   onDeleteAllLogs?: () => void;
   isDeletingAllLogs?: boolean;
-}> = ({ logs, metrics, isFetching, onFetch, onExplore, instanceUrl, userInfo, debugSession, isCreatingDebugSession, onCreateDebugSession, onStopDebugSession, isStoppingDebugSession, onDeleteAllLogs, isDeletingAllLogs }) => {
+  onOpenDebugSessionControl?: () => void;
+}> = ({ logs, metrics, isFetching, onFetch, onExplore, instanceUrl, userInfo, debugSession, isCreatingDebugSession, onCreateDebugSession, onStopDebugSession, isStoppingDebugSession, onDeleteAllLogs, isDeletingAllLogs, onOpenDebugSessionControl }) => {
   const [timeRemaining, setTimeRemaining] = useState<string>('');
 
   // Update timer every second
@@ -122,6 +123,18 @@ const DashboardView: React.FC<{
               <span>Enable Debug (30m)</span>
             </>
           )}
+        </button>
+      )}
+
+      {onOpenDebugSessionControl && (
+        <button 
+          onClick={onOpenDebugSessionControl}
+          disabled={!userInfo}
+          className="flex items-center justify-center min-w-[200px] h-14 bg-blue-600 text-white rounded-full text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] active:scale-[0.98] group disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Enhanced debug session control with custom levels and presets"
+        >
+          <Settings size={16} className="mr-2" />
+          <span>Debug Settings</span>
         </button>
       )}
     </div>

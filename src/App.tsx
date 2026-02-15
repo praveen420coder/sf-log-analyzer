@@ -4,6 +4,7 @@ import DashboardView from './components/LogKit/DashboardView';
 import DetailView from './components/LogKit/DetailView';
 import SidebarTrigger from './components/LogKit/SidebarTrigger';
 import Toast from './components/Toast';
+import DebugSessionControl from './components/LogKit/DebugSessionControl';
 import { useExtensionLogAPI } from './hooks/useExtensionLogAPI';
 import type { Log } from './types';
 
@@ -12,6 +13,7 @@ export default function App() {
   const [view, setView] = useState<'dashboard' | 'detail'>('dashboard');
   const [selectedLog, setSelectedLog] = useState<Log | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [isDebugSessionControlOpen, setIsDebugSessionControlOpen] = useState(false);
   const prevFetchingRef = useRef(false);
   const prevDeletingRef = useRef(false);
 
@@ -117,6 +119,16 @@ export default function App() {
       )}
       <SidebarTrigger onClick={() => setIsOpen(true)} />
       
+      {/* Enhanced Debug Session Control Modal */}
+      <DebugSessionControl
+        isOpen={isDebugSessionControlOpen}
+        onClose={() => setIsDebugSessionControlOpen(false)}
+        currentUserId={userInfo?.id || userInfo?.userId || ''}
+        currentUserName={userInfo?.name || userInfo?.displayName || 'Current User'}
+        instanceUrl={instanceUrl}
+        sessionId={sessionId}
+      />
+      
       <div 
         className={`
           fixed inset-y-0 right-0 z-50 bg-white shadow-[-20px_0_50px_rgba(0,0,0,0.1)] 
@@ -145,6 +157,7 @@ export default function App() {
                 isStoppingDebugSession={isStoppingDebugSession}
                 onDeleteAllLogs={deleteAllLogs}
                 isDeletingAllLogs={isDeletingAllLogs}
+                onOpenDebugSessionControl={() => setIsDebugSessionControlOpen(true)}
               />
             ) : (
               selectedLog && (
