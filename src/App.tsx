@@ -1,8 +1,9 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import Header from './components/LogKit/Header';
 import DashboardView from './components/LogKit/DashboardView';
 import DetailView from './components/LogKit/DetailView';
 import SidebarTrigger from './components/LogKit/SidebarTrigger';
+import Toast from './components/Toast';
 import { useExtensionLogAPI } from './hooks/useExtensionLogAPI';
 import type { Log } from './types';
 
@@ -10,6 +11,9 @@ export default function App() {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [view, setView] = useState<'dashboard' | 'detail'>('dashboard');
   const [selectedLog, setSelectedLog] = useState<Log | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const prevFetchingRef = useRef(false);
+  const prevDeletingRef = useRef(false);
 
   const { 
     logs, isFetching, userInfo, fetchLogs ,instanceUrl, sessionId,
@@ -51,6 +55,30 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen]);
 
+  // Show toast after fetch completes
+  useEffect(() => {
+    if (prevFetchingRef.current && !isFetching) {
+      setTimeout(() => {
+        if (logs.length > 0) {
+          setToast({ message: `Successfully fetched ${logs.length} log record${logs.length === 1 ? '' : 's'}`, type: 'success' });
+        } else {
+          setToast({ message: 'No log records found', type: 'info' });
+        }
+      }, 0);
+    }
+    prevFetchingRef.current = isFetching;
+  }, [isFetching, logs.length]);
+
+  // Show toast after delete completes
+  useEffect(() => {
+    if (prevDeletingRef.current && !isDeletingAllLogs) {
+      setTimeout(() => {
+        setToast({ message: 'All log records deleted successfully', type: 'success' });
+      }, 0);
+    }
+    prevDeletingRef.current = isDeletingAllLogs;
+  }, [isDeletingAllLogs]);
+
   // Compute metrics from logs using useMemo
   const metrics = useMemo(() => {
     if (logs && logs.length > 0) {
@@ -80,6 +108,13 @@ export default function App() {
 
   return (
     <div className="font-sans antialiased text-black min-h-screen relative overflow-hidden">
+      {toast && (
+        <Toast 
+          message={toast.message} 
+          type={toast.type} 
+          onClose={() => setToast(null)}
+        />
+      )}
       <SidebarTrigger onClick={() => setIsOpen(true)} />
       
       <div 

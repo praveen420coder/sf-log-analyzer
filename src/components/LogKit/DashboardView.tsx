@@ -75,7 +75,7 @@ const DashboardView: React.FC<{
           </div>
         )}
       </div>
-      <h1 className="text-5xl font-black tracking-tighter uppercase leading-[0.9] text-black">Analyze<br/>System Logs</h1>
+      <h1 className="text-5xl font-black tracking-tighter uppercase leading-[0.9] text-black">Analyze<br/>Salesforce Logs</h1>
     </div>
 
     <div className="flex gap-3 flex-wrap">
@@ -143,7 +143,11 @@ const DashboardView: React.FC<{
             <span className="text-[10px] font-bold border border-black px-3 py-1 rounded-full uppercase">{logs.length} Total</span>
             {onDeleteAllLogs && (
               <button 
-                onClick={onDeleteAllLogs}
+                onClick={() => {
+                  if (window.confirm(`Are you sure you want to delete all ${logs.length} log record${logs.length === 1 ? '' : 's'}? This action cannot be undone.`)) {
+                    onDeleteAllLogs();
+                  }
+                }}
                 disabled={isDeletingAllLogs || isFetching}
                 className="flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-full text-[10px] font-bold tracking-wider uppercase transition-all hover:bg-red-700 active:scale-95 disabled:opacity-50"
                 title="Delete all log records using Bulk API"
