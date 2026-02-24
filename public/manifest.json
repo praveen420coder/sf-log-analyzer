@@ -5,7 +5,6 @@
   "description": "Analyze Salesforce system logs directly from your Salesforce environment",
   "permissions": [
     "activeTab",
-    "scripting",
     "storage",
     "cookies"
   ],
