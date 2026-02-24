@@ -34,8 +34,9 @@ const cleanDomain = (domain: string): string => {
 };
 
 // Helper: Save session data to storage with hostname-specific key
-const saveSessionData = (data: SalesforceData) => {
-  const hostname = data.instanceUrl.split('//')[1];
+const saveSessionData = (data: SalesforceData, pageHostname?: string) => {
+  // Use the provided page hostname if available, otherwise extract from instanceUrl
+  const hostname = pageHostname || data.instanceUrl.split('//')[1];
   const storageKey = `sfData_${hostname}`;
   chromeAPI.storage.session.set({ [storageKey]: data });
 };
@@ -70,6 +71,7 @@ if (chromeRuntime) {
           try {
             const pageUrl = new URL(requestUrl);
             const currentDomain = pageUrl.hostname;
+            const cleanedPageHostname = cleanDomain(currentDomain);
             chromeAPI.cookies.get(
               { url: requestUrl, name: 'sid', storeId: cookieStoreId },
               (currentCookie: any) => {
@@ -83,7 +85,7 @@ if (chromeRuntime) {
                     sessionId: null,
                     timestamp: Date.now(),
                     isAuthenticated: false,
-                  });
+                  }, cleanedPageHostname);
                   return;
                 }
 
@@ -119,7 +121,7 @@ if (chromeRuntime) {
                             sessionId: sessionCookie.value,
                             timestamp: Date.now(),
                             isAuthenticated: true,
-                          });
+                          }, cleanedPageHostname);
                         }
                       }
                       
@@ -130,7 +132,7 @@ if (chromeRuntime) {
                           sessionId: currentCookie.value,
                           timestamp: Date.now(),
                           isAuthenticated: true,
-                        });
+                        }, cleanedPageHostname);
                       }
                     }
                   );
@@ -148,8 +150,7 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'GET_SF_CREDENTIALS') {
-        const hostname = request.hostname || getHostnameFromUrl(sender?.tab?.url || '');
-        
+        const hostname = request.hostname || getHostnameFromUrl(sender?.tab?.url || '');        
         if (!hostname) {
           sendResponse({ success: true, data: null });
           return true;

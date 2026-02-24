@@ -1,7 +1,28 @@
 // Salesforce page detection and credential trigger script
 
+// Use hostname-based detection since this runs at document_start (DOM not ready yet)
 function isSalesforcePage(): boolean {
-  return /--c\.|[^.]+\.force\.com|[^.]+\.salesforce\.com|[^.]+\.lightning\.force\.com/.test(window.location.hostname);
+  const hostname = window.location.hostname;
+  const salesforcePatterns = [
+    /\.salesforce\.com$/,
+    /\.salesforce-setup\.com$/,
+    /\.force\.com$/,
+    /\.cloudforce\.com$/,
+    /\.visualforce\.com$/,
+    /\.vf\.force\.com$/,
+    /\.lightning\.force\.com$/,
+    /\.salesforce\.mil$/,
+    /\.force\.mil$/,
+    /\.cloudforce\.mil$/,
+    /\.visualforce\.mil$/,
+    /\.crmforce\.mil$/,
+    /\.sfcrmapps\.cn$/,
+    /\.sfcrmproducts\.cn$/,
+    /\.builder\.salesforce-experience\.com$/,
+    /\.force\.com\.mcas\.ms$/
+  ];
+  
+  return salesforcePatterns.some(pattern => pattern.test(hostname));
 }
 
 if (isSalesforcePage()) {

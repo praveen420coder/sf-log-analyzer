@@ -1,5 +1,24 @@
 // Content script - injects iframe to load the React app
+
+function isSalesforcePage(): boolean {
+  // sfdcBody: normal Salesforce page
+  // ApexCSIPage: Developer Console
+  // auraLoadingBox: Lightning / Salesforce1
+  // studioBody: Experience Builder
+  // flowContainer: Flow Debugger
+  const visualForceDomains = ["visualforce.com", "vf.force.com"];
+  return !!(
+    document.querySelector("body.sfdcBody, body.ApexCSIPage, #auraLoadingBox, #studioBody, #flowContainer") ||
+    visualForceDomains.filter(host => location.host.endsWith(host)).length > 0
+  );
+}
+
 function injectSidebar() {
+  // Only inject on actual Salesforce pages
+  if (!isSalesforcePage()) {
+    return;
+  }
+
   if (document.getElementById('sf-log-analyzer-iframe')) {
     return;
   }
