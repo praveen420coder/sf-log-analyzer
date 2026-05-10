@@ -62,7 +62,7 @@ const DashboardView: React.FC<{
   const orgType = getOrgType();
 
   return (
-  <div className="space-y-12 max-w-2xl mx-auto text-black">
+  <div className="space-y-12 max-w-6xl mx-auto text-black">
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
         <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-gray-100 text-[9px] font-black uppercase tracking-widest text-gray-500">
