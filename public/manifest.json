@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SF Log Analyzer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Analyze Salesforce system logs directly from your Salesforce environment",
   "permissions": [
     "activeTab",
