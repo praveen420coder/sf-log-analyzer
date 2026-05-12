@@ -3,7 +3,6 @@ import Header from './components/LogKit/Header';
 import DashboardView from './components/LogKit/DashboardView';
 import DetailView from './components/LogKit/DetailView';
 import SettingsView from './components/LogKit/SettingsView';
-import SpotlightSearch from './components/LogKit/SpotlightSearch';
 import SidebarTrigger from './components/LogKit/SidebarTrigger';
 import Toast from './components/Toast';
 import DebugSessionControl from './components/LogKit/DebugSessionControl';
@@ -14,7 +13,6 @@ import type { Log } from './types';
 export default function App() {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [view, setView] = useState<'dashboard' | 'detail' | 'settings'>('dashboard');
-  const [isSpotlightOpen, setIsSpotlightOpen] = useState<boolean>(false);
   const [selectedLog, setSelectedLog] = useState<Log | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [isDebugSessionControlOpen, setIsDebugSessionControlOpen] = useState(false);
@@ -62,21 +60,6 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen]);
-
-  useEffect(() => {
-    // Handle Alt+T to open Spotlight Search (with capture phase to ensure it fires first)
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey && (event.key === 't' || event.key === 'T')) {
-        event.preventDefault();
-        event.stopPropagation();
-        setIsSpotlightOpen(true);
-      }
-    };
-    
-    // Use capture phase to intercept before other handlers
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, []);
 
   // Show toast after fetch completes
   useEffect(() => {
@@ -142,11 +125,6 @@ export default function App() {
           onClose={() => setToast(null)}
         />
       )}
-      <SpotlightSearch 
-        isOpen={isSpotlightOpen}
-        onClose={() => setIsSpotlightOpen(false)}
-        instanceUrl={instanceUrl}
-      />
       <SidebarTrigger onClick={() => setIsOpen(true)} />
       
       {/* Enhanced Debug Session Control Modal */}

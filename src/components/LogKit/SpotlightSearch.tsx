@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, X, Zap, Settings, Database, Code, ExternalLink } from 'lucide-react';
 
 interface SpotlightItem {
@@ -166,20 +167,20 @@ const SpotlightSearch: React.FC<SpotlightSearchProps> = ({ isOpen, onClose, inst
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-[15vh] pointer-events-none">
+  const modalContent = (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center pointer-events-none">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto"
+        className="absolute inset-0 bg-black/30 backdrop-blur-lg pointer-events-auto"
         onClick={onClose}
       />
 
-      {/* Search Modal */}
-      <div className="relative w-full max-w-2xl mx-4 pointer-events-auto">
-        <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/20 overflow-hidden">
+      {/* Search Modal - Glass Design */}
+      <div className="relative w-full max-w-3xl mx-4 pointer-events-auto">
+        <div className="bg-white/10 backdrop-blur-2xl rounded-3xl shadow-2xl border border-white/30 overflow-hidden">
           {/* Search Input */}
-          <div className="flex items-center px-6 py-4 border-b border-gray-100">
-            <Search size={20} className="text-gray-400 mr-3" />
+          <div className="flex items-center px-8 py-6 border-b border-white/20">
+            <Search size={24} className="text-white/70 mr-4" />
             <input
               ref={searchInputRef}
               type="text"
@@ -190,77 +191,77 @@ const SpotlightSearch: React.FC<SpotlightSearchProps> = ({ isOpen, onClose, inst
                 setSelectedIndex(0);
               }}
               onKeyDown={handleKeyDown}
-              className="flex-1 bg-transparent text-lg text-black placeholder-gray-400 focus:outline-none font-medium"
+              className="flex-1 bg-transparent text-xl text-white placeholder-white/50 focus:outline-none font-medium"
             />
             <button
               onClick={onClose}
-              className="ml-2 p-1 hover:bg-gray-100 rounded-lg transition-colors"
+              className="ml-4 p-2 hover:bg-white/10 rounded-lg transition-colors"
             >
-              <X size={20} className="text-gray-400" />
+              <X size={24} className="text-white/70 hover:text-white" />
             </button>
           </div>
 
           {/* Results */}
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-[400px] overflow-y-auto">
             {isLoading ? (
-              <div className="px-6 py-12 text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-3" />
-                <p className="text-gray-500 font-medium">Loading setup items...</p>
+              <div className="px-8 py-16 text-center">
+                <div className="animate-spin rounded-full h-10 w-10 border-2 border-white/30 border-t-white mx-auto mb-4" />
+                <p className="text-white/70 font-medium">Loading setup items...</p>
               </div>
             ) : filteredItems.length > 0 ? (
-              <div className="divide-y divide-gray-100">
+              <div className="divide-y divide-white/10">
                 {filteredItems.map((item, index) => (
                   <button
                     key={item.id}
                     onClick={() => handleSelectItem(item)}
                     onMouseEnter={() => setSelectedIndex(index)}
-                    className={`w-full px-6 py-4 flex items-start gap-4 transition-all text-left group ${
+                    className={`w-full px-8 py-5 flex items-start gap-4 transition-all text-left group ${
                       index === selectedIndex
-                        ? 'bg-gradient-to-r from-black/5 to-black/0'
-                        : 'hover:bg-gray-50'
+                        ? 'bg-white/10 backdrop-blur-md'
+                        : 'hover:bg-white/5 backdrop-blur-sm'
                     }`}
                   >
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-blue-100 to-blue-50 flex items-center justify-center text-blue-600 mt-1">
+                    <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-white/10 backdrop-blur-md flex items-center justify-center text-white/80 mt-1 group-hover:bg-white/20 transition-all">
                       {item.icon}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-black text-sm flex items-center gap-2">
+                      <div className="font-semibold text-white text-base flex items-center gap-2">
                         {item.title}
-                        <ExternalLink size={14} className="text-gray-300 group-hover:text-gray-400 transition-colors" />
+                        <ExternalLink size={14} className="text-white/40 group-hover:text-white/60 transition-colors" />
                       </div>
-                      <div className="text-xs text-gray-500 mt-1">{item.description}</div>
+                      <div className="text-sm text-white/60 mt-1">{item.description}</div>
                     </div>
-                    <div className="flex-shrink-0 text-xs font-bold text-gray-300 uppercase tracking-wider">
+                    <div className="flex-shrink-0 text-xs font-bold text-white/50 uppercase tracking-wider">
                       {item.category}
                     </div>
                   </button>
                 ))}
               </div>
             ) : (
-              <div className="px-6 py-12 text-center">
-                <Search size={32} className="mx-auto text-gray-300 mb-3" />
-                <p className="text-gray-500 font-medium">No results found</p>
-                <p className="text-gray-400 text-sm mt-1">Try searching for something else</p>
+              <div className="px-8 py-16 text-center">
+                <Search size={40} className="mx-auto text-white/30 mb-4" />
+                <p className="text-white/70 font-medium">No results found</p>
+                <p className="text-white/50 text-sm mt-2">Try searching for something else</p>
               </div>
             )}
           </div>
 
           {/* Footer */}
           {filteredItems.length > 0 && (
-            <div className="px-6 py-3 border-t border-gray-100 bg-gray-50/50 text-xs text-gray-500 flex items-center justify-between">
+            <div className="px-8 py-4 border-t border-white/20 bg-white/5 backdrop-blur-sm text-xs text-white/60 flex items-center justify-between">
               <div>
                 {filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''}
               </div>
-              <div className="flex gap-2 items-center">
-                <kbd className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-semibold">
+              <div className="flex gap-3 items-center">
+                <kbd className="px-3 py-1 rounded bg-white/10 backdrop-blur-md border border-white/20 text-xs font-semibold text-white/70">
                   ↑↓
                 </kbd>
                 <span>Navigate</span>
-                <kbd className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-semibold">
+                <kbd className="px-3 py-1 rounded bg-white/10 backdrop-blur-md border border-white/20 text-xs font-semibold text-white/70">
                   Enter
                 </kbd>
                 <span>Select</span>
-                <kbd className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-semibold">
+                <kbd className="px-3 py-1 rounded bg-white/10 backdrop-blur-md border border-white/20 text-xs font-semibold text-white/70">
                   Esc
                 </kbd>
                 <span>Close</span>
@@ -271,6 +272,8 @@ const SpotlightSearch: React.FC<SpotlightSearchProps> = ({ isOpen, onClose, inst
       </div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 };
 
 export default SpotlightSearch;
