@@ -370,6 +370,43 @@ function showSpotlightSearch(_iframe: HTMLIFrameElement) {
     resultsContainer.style.maxHeight = '400px';
     resultsContainer.style.overflowY = 'auto';
 
+    // Custom scrollbar styling
+    resultsContainer.style.scrollbarWidth = 'thin'; // Firefox
+    resultsContainer.style.scrollbarColor = 'rgba(31, 41, 55, 0.35) transparent';
+    resultsContainer.style.scrollBehavior = 'smooth';
+
+    // Webkit scrollbar styles (Chrome/Edge)
+    const scrollbarStyle = document.createElement('style');
+    scrollbarStyle.textContent = `
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar {
+        width: 10px;
+      }
+
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-track {
+        background: transparent;
+        margin: 12px 0;
+      }
+
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb {
+        background: rgba(31, 41, 55, 0.25);
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+        transition: background 0.2s ease;
+      }
+
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb:hover {
+        background: rgba(31, 41, 55, 0.45);
+        background-clip: padding-box;
+      }
+
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-corner {
+        background: transparent;
+      }
+    `;
+
+    document.head.appendChild(scrollbarStyle);
+
     // No results message
     const noResults = document.createElement('div');
     noResults.style.padding = '64px 32px';
@@ -533,13 +570,36 @@ function showSpotlightSearch(_iframe: HTMLIFrameElement) {
     });
 
     function updateSelection(buttons: NodeListOf<Element>, index: number) {
-      buttons.forEach((btn) => {
-        (btn as HTMLElement).style.backgroundColor = 'transparent';
+      buttons.forEach((btn, btnIndex) => {
+        const element = btn as HTMLElement;
+
+        element.style.backgroundColor =
+          btnIndex === index
+            ? 'rgba(255, 255, 255, 0.2)'
+            : 'transparent';
       });
-      
+
       if (index >= 0 && index < buttons.length) {
-        (buttons[index] as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
-        (buttons[index] as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const selectedButton = buttons[index] as HTMLElement;
+
+        // Smooth controlled scrolling
+        const containerRect = resultsContainer.getBoundingClientRect();
+        const buttonRect = selectedButton.getBoundingClientRect();
+
+        const isAbove = buttonRect.top < containerRect.top;
+        const isBelow = buttonRect.bottom > containerRect.bottom;
+
+        if (isAbove || isBelow) {
+          const offset =
+            selectedButton.offsetTop -
+            resultsContainer.clientHeight / 2 +
+            selectedButton.clientHeight / 2;
+
+          resultsContainer.scrollTo({
+            top: offset,
+            behavior: 'smooth',
+          });
+        }
       }
     }
 
