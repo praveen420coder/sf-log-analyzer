@@ -482,7 +482,7 @@ function showSpotlightSearch(_iframe: HTMLIFrameElement) {
         resultItem.appendChild(externalLink);
 
         resultItem.addEventListener('mouseover', () => {
-          resultItem.style.backgroundColor = 'rgba(255, 255, 255, 0.15)';
+          resultItem.style.backgroundColor = 'rgba(245, 245, 245, 0.69)';
           iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.25)';
           externalLink.style.color = '#1f2937';
         });
@@ -496,7 +496,10 @@ function showSpotlightSearch(_iframe: HTMLIFrameElement) {
         resultItem.addEventListener('click', () => {
           const protocol = window.location.protocol;
           const hostname = window.location.hostname;
-          const fullUrl = `${protocol}//${hostname}${link.link}`;
+          let fullUrl = `${protocol}//${hostname}${link.link}`;
+          if (link.isExternal) {
+            fullUrl = link.link;
+          }
           window.open(fullUrl, '_blank');
           hideSpotlightSearch();
         });
