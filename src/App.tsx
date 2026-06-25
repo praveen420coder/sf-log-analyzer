@@ -125,7 +125,10 @@ export default function App() {
           onClose={() => setToast(null)}
         />
       )}
-      <SidebarTrigger onClick={() => setIsOpen(true)} />
+      <SidebarTrigger
+        onOpenLogs={() => setIsOpen(true)}
+        onOpenSpotlight={() => window.parent.postMessage({ type: 'SF_SPOTLIGHT_SHORTCUT' }, '*')}
+      />
       
       {/* Enhanced Debug Session Control Modal */}
       <DebugSessionControl

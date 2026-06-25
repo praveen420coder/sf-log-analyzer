@@ -604,6 +604,144 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'GET_ALL_ACTIVE_USERS') {
+        const query = `SELECT Id, Name, Username, Email FROM User WHERE IsActive = true ORDER BY Name LIMIT 100`;
+
+        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(query)}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data: data.records }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_ALL_FLOWS') {
+        // FlowDefinitionView lists every flow/process in the org and exposes the
+        // version ids needed to open the flow in Flow Builder.
+        const query = `SELECT DurableId, ApiName, Label, ProcessType, IsActive, VersionNumber, ManageableState, NamespacePrefix, ActiveVersionId, LatestVersionId FROM FlowDefinitionView ORDER BY Label LIMIT 500`;
+
+        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(query)}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data: data.records }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_ALL_APPS') {
+        // AppMenuItem.StartUrl for Lightning apps is the generic /one/one.app
+        // launcher URL, so every app lands on the default home. Instead we pull
+        // AppDefinition (navigable via /lightning/app/<DurableId>) for apps and
+        // TabDefinition (its Url is a real, redirectable nav target) for tabs.
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const q = (soql: string) =>
+          fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, { headers })
+            .then(res => (res.ok ? res.json() : null))
+            .then(data => (data?.records || []))
+            .catch(() => []);
+
+        Promise.all([
+          q(`SELECT DurableId, Label, DeveloperName, NamespacePrefix, UiType FROM AppDefinition ORDER BY Label LIMIT 1000`),
+          q(`SELECT DurableId, Label, Name, Url FROM TabDefinition ORDER BY Label LIMIT 1000`),
+        ])
+          .then(([apps, tabs]) => {
+            const data = [
+              ...apps
+                .filter((a: any) => a.UiType === 'Lightning')
+                .map((a: any) => ({
+                  id: a.DurableId,
+                  label: a.Label,
+                  name: a.DeveloperName,
+                  type: 'app',
+                  url: `/lightning?appContextId=${a.DurableId}`,
+                })),
+              ...tabs.map((t: any) => ({
+                id: t.DurableId,
+                label: t.Label,
+                name: t.Name,
+                type: 'tab',
+                url: t.Url || '',
+              })),
+            ];
+            sendResponse({ success: true, data });
+          })
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_ALL_OBJECTS') {
+        // EntityDefinition lists every sObject, but the Object Manager only shows
+        // customizable standard + custom objects. We pull IsCustomizable /
+        // IsDeprecatedAndHidden so we can filter out the system objects (share,
+        // history, feed, change-event, tag tables, etc.) that Object Manager hides.
+        // ORDER BY QualifiedApiName is the only reliably sortable field; we sort by
+        // label on the client.
+        const query = `SELECT QualifiedApiName, Label, DurableId, KeyPrefix, IsCustomizable, IsDeprecatedAndHidden FROM EntityDefinition ORDER BY QualifiedApiName LIMIT 2000`;
+
+        // System-object suffixes that never appear in Object Manager.
+        const systemSuffixes = ['__Share', '__History', '__Feed', '__ChangeEvent', '__Tag', '__ViewStat', '__VoteStat', '__OwnerShareRule', '__HistoryArchive'];
+        const isObjectManagerObject = (r: any): boolean => {
+          if (r.IsDeprecatedAndHidden) return false;
+          if (r.IsCustomizable === false) return false;
+          const api: string = r.QualifiedApiName || '';
+          if (systemSuffixes.some(s => api.endsWith(s))) return false;
+          return true;
+        };
+
+        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(query)}`, {
+          headers: {
+            'Authorization': `Bearer ${request.sessionId}`,
+          },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => {
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 100) || 'Unknown error'}`);
+          }))
+          .then(data => sendResponse({ success: true, data: (data.records || []).filter(isObjectManagerObject) }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_ALL_SECURITY') {
+        // Permission sets, permission set groups, and profiles in one shot.
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const q = (soql: string) =>
+          fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, { headers })
+            .then(res => (res.ok ? res.json() : null))
+            .then(data => (data?.records || []))
+            .catch(() => []);
+
+        Promise.all([
+          q(`SELECT Id, Label, Name, Type FROM PermissionSet WHERE IsOwnedByProfile = false ORDER BY Label`),
+          q(`SELECT Id, MasterLabel, DeveloperName FROM PermissionSetGroup ORDER BY MasterLabel`),
+          q(`SELECT Id, Name FROM Profile ORDER BY Name`),
+        ])
+          .then(([permSets, groups, profiles]) => {
+            const data = [
+              ...permSets.map((r: any) => ({ id: r.Id, label: r.Label || r.Name, name: r.Name, type: 'Permission Set' })),
+              ...groups.map((r: any) => ({ id: r.Id, label: r.MasterLabel || r.DeveloperName, name: r.DeveloperName, type: 'Permission Set Group' })),
+              ...profiles.map((r: any) => ({ id: r.Id, label: r.Name, name: r.Name, type: 'Profile' })),
+            ];
+            sendResponse({ success: true, data });
+          })
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
       if (request.type === 'SEARCH_USERS') {
         const query = `SELECT Id, Name, Username, Email FROM User WHERE IsActive = true AND (Name LIKE '%${request.searchTerm}%' OR Username LIKE '%${request.searchTerm}%' OR Email LIKE '%${request.searchTerm}%') ORDER BY Name LIMIT 10`;
 
@@ -635,6 +773,51 @@ if (chromeRuntime) {
 
         return true;
       }
+
+      if (request.type === 'OPEN_INCOGNITO_TAB') {
+        chromeAPI.windows.create({
+          url: request.url,
+          incognito: true,
+        }, () => {
+          sendResponse({ success: true });
+        });
+        return true;
+      }
+
+      if (request.type === 'NAVIGATE_CURRENT_TAB') {
+        // Navigate current tab — session cookie carried automatically ✅
+        chromeAPI.tabs.query({ active: true, currentWindow: true }, (tabs: any[]) => {
+          if (tabs?.[0]?.id) {
+            chromeAPI.tabs.update(tabs[0].id, { url: request.url });
+          }
+          sendResponse({ success: true });
+      });
+  return true;
+}
+
+if (request.type === 'OPEN_INCOGNITO_TAB') {
+  // Step 1: Create incognito window
+  chromeAPI.windows.create({ incognito: true }, (win: any) => {
+    const tabId = win.tabs[0].id;
+    const domain = new URL(request.instanceUrl).hostname;
+
+    // Step 2: Inject session cookie into incognito window
+    chromeAPI.cookies.set({
+      url: request.instanceUrl,
+      name: 'sid',
+      value: request.sessionId,
+      domain: domain,
+      secure: true,
+      httpOnly: true,
+      sameSite: 'no_restriction',
+    }, () => {
+      // Step 3: Navigate to Login As URL
+      chromeAPI.tabs.update(tabId, { url: request.url });
+      sendResponse({ success: true });
+    });
+  });
+  return true;
+}
     }
   );
   
