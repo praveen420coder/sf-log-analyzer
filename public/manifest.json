@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "SF Spotlite",
+  "name": "SF Spotlight",
   "version": "1.4.0",
   "description": "Quick Navigation to Salesforce Setting and Records and Analyze Salesforce system logs",
   "icons": {
@@ -10,7 +10,7 @@
     "128": "icons/Spotlite-Icon-128.png"
   },
     "action": {
-    "default_title": "SF Spotlite",
+    "default_title": "SF Spotlight",
     "default_icon": {
       "16": "icons/Spotlite-Icon-16.png",
       "32": "icons/Spotlite-Icon-32.png",

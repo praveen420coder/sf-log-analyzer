@@ -1529,7 +1529,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   const brandText = document.createElement('div');
   brandText.style.fontSize = '13px';
   brandText.style.whiteSpace = 'nowrap';
-  brandText.innerHTML = `<span style="font-weight:700;color:${T.textPrimary};">Spotlite</span> <span style="color:${T.textFaint};font-weight:500;"> for Salesforce</span>`;
+  brandText.innerHTML = `<span style="font-weight:700;color:${T.textPrimary};">Spotlight</span> <span style="color:${T.textFaint};font-weight:500;"> for Salesforce</span>`;
 
   brand.appendChild(logo);
   brand.appendChild(brandText);
