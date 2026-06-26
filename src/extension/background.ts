@@ -872,6 +872,43 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'GET_ORG_LIMITS') {
+        // /limits returns every org limit as { Max, Remaining } — covers both API
+        // usage (DailyApiRequests, etc.) and storage (DataStorageMB, FileStorageMB).
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        fetch(`${request.instanceUrl}/services/data/v60.0/limits`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 120)}`); })))
+          .then((data) => sendResponse({ success: true, data }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'GET_RELEASE_INFO') {
+        // /services/data/ lists supported API versions; the newest label is the
+        // release the org is currently running (e.g. "Winter '26").
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        fetch(`${request.instanceUrl}/services/data/`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 100)}`); })))
+          .then((versions) => {
+            const arr = Array.isArray(versions) ? versions : [];
+            const latest = arr[arr.length - 1] || null;
+            sendResponse({ success: true, data: { label: latest?.label || null, version: latest?.version || null, count: arr.length } });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'GET_ORG_INFO') {
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const q = `SELECT Id, Name, OrganizationType, InstanceName, IsSandbox, Country, LanguageLocaleKey, DefaultLocaleSidKey, FiscalYearStartMonth, TrialExpirationDate, NamespacePrefix, Division, CreatedDate FROM Organization LIMIT 1`;
+        fetch(`${request.instanceUrl}/services/data/${V}/query?q=${encodeURIComponent(q)}`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 120) || 'Unknown error'}`); })))
+          .then((data) => sendResponse({ success: true, data: data.records?.[0] || null }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'UPDATE_RECORD_FIELD') {
         // PATCH a single field on a record. Salesforce enforces FLS/validation;
         // any failure (no edit access, validation rule, required field) returns

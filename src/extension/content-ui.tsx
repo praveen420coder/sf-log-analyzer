@@ -120,17 +120,18 @@ function applySettingsToIframe(
 
 // ─── Spotlight tab configuration ─────────────────────────────────────────────
 
-interface SpotlightTab { id: string; label: string; placeholder: string; }
+interface SpotlightTab { id: string; label: string; placeholder: string; icon: string; }
 
 const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
-  { id: 'setup', label: 'Setup', placeholder: 'Search Salesforce Setup...' },
-  { id: 'recent', label: 'Recent', placeholder: 'Search recently opened...' },
-  { id: 'objects', label: 'Objects', placeholder: 'Search Objects...' },
-  { id: 'metadata', label: 'Metadata', placeholder: 'Search Custom Metadata & Settings...' },
-  { id: 'users', label: 'Users', placeholder: 'Search Users...' },
-  { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...' },
-  { id: 'flows', label: 'Flows', placeholder: 'Search Flows...' },
-  { id: 'apps', label: 'Apps & Tabs', placeholder: 'Search apps & tabs...' },
+  { id: 'tools', label: 'Tools', placeholder: 'Search tools & actions...', icon: '🛠️' },
+  { id: 'setup', label: 'Setup', placeholder: 'Search Salesforce Setup...', icon: '🏠' },
+  { id: 'recent', label: 'Recent', placeholder: 'Search recently opened...', icon: '🕘' },
+  { id: 'objects', label: 'Objects', placeholder: 'Search Objects...', icon: '📦' },
+  { id: 'metadata', label: 'Metadata', placeholder: 'Search Custom Metadata & Settings...', icon: '🧩' },
+  { id: 'users', label: 'Users', placeholder: 'Search Users...', icon: '👤' },
+  { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
+  { id: 'flows', label: 'Flows', placeholder: 'Search Flows...', icon: '⚡' },
+  { id: 'apps', label: 'Apps & Tabs', placeholder: 'Search apps & tabs...', icon: '🚀' }
 ];
 
 // Tabs that should start hidden (user can enable them from the ⚙ settings).
@@ -243,12 +244,186 @@ function clearRecents(): void {
 
 loadRecents();
 
+// ─── Pinned / favorite destinations ──────────────────────────────────────────
+
+const FAVORITES_KEY = 'sf_spotlight_favorites';
+const MAX_FAVORITES = 50;
+
+let favoriteItems: RecentItem[] = [];
+
+function loadFavorites(): void {
+  if ((globalThis as any).chrome?.storage?.local) {
+    (globalThis as any).chrome.storage.local.get([FAVORITES_KEY], (res: any) => {
+      favoriteItems = Array.isArray(res?.[FAVORITES_KEY]) ? res[FAVORITES_KEY] : [];
+    });
+  } else {
+    try { favoriteItems = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]'); }
+    catch { favoriteItems = []; }
+  }
+}
+
+function saveFavorites(): void {
+  if ((globalThis as any).chrome?.storage?.local) {
+    (globalThis as any).chrome.storage.local.set({ [FAVORITES_KEY]: favoriteItems });
+  } else {
+    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favoriteItems)); } catch { /* ignore */ }
+  }
+}
+
+function isFavorite(url: string, kind: string): boolean {
+  return favoriteItems.some(f => f.url === url && f.kind === kind);
+}
+
+// Returns the new state (true = now pinned).
+function toggleFavorite(entry: Omit<RecentItem, 'ts'>): boolean {
+  if (!entry.url) return false;
+  if (isFavorite(entry.url, entry.kind)) {
+    favoriteItems = favoriteItems.filter(f => !(f.url === entry.url && f.kind === entry.kind));
+    saveFavorites();
+    return false;
+  }
+  favoriteItems.unshift({ ...entry, ts: Date.now() });
+  if (favoriteItems.length > MAX_FAVORITES) favoriteItems.length = MAX_FAVORITES;
+  saveFavorites();
+  return true;
+}
+
+loadFavorites();
+
+// ─── Tools: persisted toggles & page tweaks ──────────────────────────────────
+
+interface ToolsState { showFieldApi: boolean; hideDevBar: boolean; hideLoginAd: boolean; }
+const TOOLS_STATE_KEY = 'sf_spotlight_tools_state';
+let toolsState: ToolsState = { showFieldApi: false, hideDevBar: false, hideLoginAd: false };
+
+function loadToolsState(cb?: () => void): void {
+  if ((globalThis as any).chrome?.storage?.local) {
+    (globalThis as any).chrome.storage.local.get([TOOLS_STATE_KEY], (res: any) => {
+      toolsState = { ...toolsState, ...(res?.[TOOLS_STATE_KEY] || {}) };
+      cb?.();
+    });
+  } else { cb?.(); }
+}
+function saveToolsState(): void {
+  (globalThis as any).chrome?.storage?.local?.set({ [TOOLS_STATE_KEY]: toolsState });
+}
+
+// Inject (or remove) a scoped <style> used to hide page chrome.
+function setHideStyle(id: string, css: string, on: boolean): void {
+  let el = document.getElementById(id) as HTMLStyleElement | null;
+  if (on) {
+    if (!el) { el = document.createElement('style'); el.id = id; (document.head || document.documentElement).appendChild(el); }
+    el.textContent = css;
+  } else {
+    el?.remove();
+  }
+}
+
+function applyHideDevBar(on: boolean): void {
+  setHideStyle('sf-tool-hide-devbar',
+    'one-app-dev-tools-panel, .oneAuraDevToolBar, .auraDevToolBar, .devModeFooter, [class*="auraDevTool"], [class*="DevToolBar"] { display: none !important; }',
+    on);
+}
+function applyHideLoginAd(on: boolean): void {
+  setHideStyle('sf-tool-hide-loginad',
+    '#rightPanel, .right, .loginAd, .right-panel, [id*="rightPanel"], .marketing, .promo, .field.right { display: none !important; }',
+    on);
+}
+
+// Field API-name chips on Lightning record pages.
+let fieldApiTimer: any = null;
+let fieldApiObserver: MutationObserver | null = null;
+function scanFieldApiNames(): void {
+  // Field cells expose data-target-selection-name on the inner div; the API name
+  // is the third dot-segment (e.g. "…​.…​.FieldApiName").
+  const fields = document.querySelectorAll(
+    'record_flexipage-record-field > div, records-record-layout-item > div, div .forcePageBlockItemView'
+  );
+  fields.forEach((field) => {
+    const sel = (field as HTMLElement).dataset?.targetSelectionName;
+    if (!sel) return;
+    const parts = sel.split('.');
+    const api = parts[2] || parts[parts.length - 1];
+    if (!api) return;
+    const labelEl = field.querySelector('span');
+    if (!labelEl) return;
+    if (field.querySelector('.sf-api-chip')) return;
+
+    // Pill: [ ApiName | copy ] — placed inline next to the field label.
+    const chip = document.createElement('span');
+    chip.className = 'sf-api-chip';
+    Object.assign(chip.style, {
+      display: 'inline-flex', alignItems: 'center', gap: '6px', verticalAlign: 'middle', maxWidth: '100%',
+      marginLeft: '6px', padding: '0px 4px 0px 8px', borderRadius: '6px',
+      background: 'rgba(37,99,235,0.10)', border: '1px solid rgba(37,99,235,0.25)',
+      color: '#2563eb', fontSize: '11px', fontWeight: '600', fontFamily: 'monospace', lineHeight: '1.7',
+    });
+
+    const text = document.createElement('span');
+    text.textContent = api;
+    Object.assign(text.style, { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.title = 'Copy API name';
+    const copyIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+    const okIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+    copyBtn.innerHTML = copyIcon;
+    Object.assign(copyBtn.style, {
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '2px',
+      background: 'transparent', border: 'none', borderRadius: '4px', cursor: 'pointer', color: '#2563eb',
+      appearance: 'none', WebkitAppearance: 'none', flexShrink: '0',
+    });
+    copyBtn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      navigator.clipboard?.writeText(api).then(() => {
+        copyBtn.innerHTML = okIcon;
+        setTimeout(() => { copyBtn.innerHTML = copyIcon; }, 1100);
+      }).catch(() => {});
+    });
+
+    chip.appendChild(text);
+    chip.appendChild(copyBtn);
+    labelEl.insertAdjacentElement('afterend', chip);
+  });
+}
+function applyShowFieldApi(on: boolean): void {
+  if (on) {
+    scanFieldApiNames();
+    if (!fieldApiObserver) {
+      fieldApiObserver = new MutationObserver(() => {
+        clearTimeout(fieldApiTimer);
+        fieldApiTimer = setTimeout(scanFieldApiNames, 400);
+      });
+      try { if (document.body) fieldApiObserver.observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
+    }
+  } else {
+    fieldApiObserver?.disconnect();
+    fieldApiObserver = null;
+    document.querySelectorAll('.sf-api-chip').forEach((e) => e.remove());
+  }
+}
+
+function applyToolToggle(key: keyof ToolsState): void {
+  if (key === 'hideDevBar') applyHideDevBar(toolsState.hideDevBar);
+  else if (key === 'hideLoginAd') applyHideLoginAd(toolsState.hideLoginAd);
+  else if (key === 'showFieldApi') applyShowFieldApi(toolsState.showFieldApi);
+}
+function applyAllToolToggles(): void {
+  applyHideDevBar(toolsState.hideDevBar);
+  applyHideLoginAd(toolsState.hideLoginAd);
+  applyShowFieldApi(toolsState.showFieldApi);
+}
+
+loadToolsState(() => applyAllToolToggles());
+
 // Module-level caches persist across spotlight re-opens.
 let cachedUsers: any[] | null = null;
 let cachedFlows: any[] | null = null;
 let cachedObjects: any[] | null = null;
 let cachedMetadata: any[] | null = null;
 let cachedSecurity: any[] | null = null;
+let currentUserId: string | null = null;
 let cachedApps: any[] | null = null;
 
 function cleanSfDomain(domain: string): string {
@@ -902,6 +1077,229 @@ function showWhatsNew(version: string): void {
   container.style.pointerEvents = 'auto';
 }
 
+// ─── Org details (shown in-extension, no redirect) ───────────────────────────
+
+function toolBackHeader(isDark: boolean, title: string, onBack: () => void): HTMLElement {
+  const textPrimary = isDark ? '#f1f5f9' : '#1f2937';
+  const textMuted = isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)';
+  const divider = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)';
+  const wrap = document.createElement('div');
+  Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 28px 10px', borderBottom: `1px solid ${divider}`, marginBottom: '8px' });
+  const back = document.createElement('button');
+  back.innerHTML = '<span style="font-size:15px">←</span><span>Tools</span>';
+  Object.assign(back.style, { display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'transparent', border: 'none', cursor: 'pointer', color: textMuted, fontFamily: 'inherit', fontSize: '13px', fontWeight: '700' });
+  back.addEventListener('mouseover', () => { back.style.color = textPrimary; });
+  back.addEventListener('mouseout', () => { back.style.color = textMuted; });
+  back.addEventListener('click', onBack);
+  const sep = document.createElement('span'); sep.textContent = '/'; sep.style.color = isDark ? 'rgba(148,163,184,0.5)' : 'rgba(31,41,55,0.35)';
+  const t = document.createElement('div'); t.textContent = title;
+  Object.assign(t.style, { fontSize: '15px', fontWeight: '800', color: textPrimary });
+  wrap.appendChild(back); wrap.appendChild(sep); wrap.appendChild(t);
+  return wrap;
+}
+
+function renderOrgDetailsInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
+  host.innerHTML = '';
+  const C = {
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
+    accent: '#2563eb',
+  };
+  host.appendChild(toolBackHeader(isDark, '🏢  Org Details', onBack));
+  const body = document.createElement('div');
+  Object.assign(body.style, { padding: '4px 28px 20px' });
+  host.appendChild(body);
+
+  const msg = (t: string) => { body.innerHTML = ''; const d = document.createElement('div'); Object.assign(d.style, { padding: '40px 0', textAlign: 'center', color: C.textMuted, fontSize: '14px', fontWeight: '600' }); d.textContent = t; body.appendChild(d); };
+  msg('Loading org details…');
+
+  getSfCredentials().then((creds: any) => {
+    if (!creds?.instanceUrl || !creds?.sessionId) { msg('Salesforce session not detected.'); return; }
+    (globalThis as any).chrome.runtime.sendMessage(
+      { type: 'GET_ORG_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+      (resp: any) => {
+        if (!resp?.success || !resp.data) { msg(resp?.error || 'Could not load org details.'); return; }
+        const o = resp.data;
+        const rows: { label: string; value: string }[] = [
+          { label: 'Name', value: o.Name || '—' },
+          { label: 'Org Id', value: o.Id || '—' },
+          { label: 'Edition', value: o.OrganizationType || '—' },
+          { label: 'Environment', value: o.IsSandbox ? 'Sandbox' : 'Production' },
+          { label: 'Instance', value: o.InstanceName || '—' },
+          { label: 'Namespace', value: o.NamespacePrefix || '—' },
+          { label: 'Division', value: o.Division || '—' },
+          { label: 'Country', value: o.Country || '—' },
+          { label: 'Locale', value: o.DefaultLocaleSidKey || o.LanguageLocaleKey || '—' },
+          { label: 'Instance URL', value: creds.instanceUrl },
+          { label: 'Created', value: o.CreatedDate ? String(o.CreatedDate).split('T')[0] : '—' },
+        ];
+        body.innerHTML = '';
+        rows.forEach((r) => {
+          const row = document.createElement('div');
+          Object.assign(row.style, { display: 'flex', gap: '12px', padding: '10px 0', borderBottom: `1px solid ${C.divider}` });
+          const lbl = document.createElement('div');
+          lbl.textContent = r.label;
+          Object.assign(lbl.style, { width: '120px', flexShrink: '0', fontSize: '12px', fontWeight: '700', color: C.textFaint, textTransform: 'uppercase', letterSpacing: '0.04em' });
+          const val = document.createElement('div');
+          val.textContent = r.value;
+          Object.assign(val.style, { flex: '1', fontSize: '13px', color: C.textPrimary, wordBreak: 'break-word', fontWeight: '500' });
+          const copy = document.createElement('span');
+          copy.textContent = '⧉';
+          Object.assign(copy.style, { cursor: 'pointer', color: C.textFaint, fontSize: '13px', flexShrink: '0' });
+          copy.title = 'Copy';
+          copy.addEventListener('click', () => { navigator.clipboard?.writeText(r.value).catch(() => {}); });
+          row.appendChild(lbl); row.appendChild(val); row.appendChild(copy);
+          body.appendChild(row);
+        });
+      }
+    );
+  });
+}
+
+// ─── Salesforce release info (shown in-extension) ────────────────────────────
+
+function renderReleaseInfoInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
+  host.innerHTML = '';
+  const C = {
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    surface: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+    hover: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    accent: '#2563eb',
+  };
+  host.appendChild(toolBackHeader(isDark, '🚀  Salesforce Release', onBack));
+  const body = document.createElement('div');
+  Object.assign(body.style, { padding: '8px 28px 20px' });
+  host.appendChild(body);
+
+  // Current release banner (filled once the fetch resolves).
+  const banner = document.createElement('div');
+  Object.assign(banner.style, { padding: '16px', borderRadius: '12px', background: C.surface, border: `1px solid ${C.divider}`, marginBottom: '16px', textAlign: 'center' });
+  const relLabel = document.createElement('div');
+  relLabel.textContent = 'Loading current release…';
+  Object.assign(relLabel.style, { fontSize: '22px', fontWeight: '800', color: C.textPrimary });
+  const relVer = document.createElement('div');
+  Object.assign(relVer.style, { fontSize: '12px', color: C.textMuted, marginTop: '4px' });
+  banner.appendChild(relLabel); banner.appendChild(relVer);
+  body.appendChild(banner);
+
+  const linkRow = (icon: string, label: string, sub: string, onClick: () => void) => {
+    const row = document.createElement('button');
+    Object.assign(row.style, {
+      display: 'flex', alignItems: 'center', gap: '12px', width: '100%', padding: '12px 14px', marginBottom: '8px',
+      background: C.surface, border: `1px solid ${C.divider}`, borderRadius: '12px', cursor: 'pointer',
+      fontFamily: 'inherit', textAlign: 'left', color: C.textPrimary,
+    });
+    row.innerHTML = `<span style="font-size:20px">${icon}</span><span style="flex:1"><span style="display:block;font-size:14px;font-weight:700">${label}</span><span style="display:block;font-size:12px;color:${C.textMuted}">${sub}</span></span><span style="color:${C.textMuted}">↗</span>`;
+    row.addEventListener('mouseover', () => { row.style.background = C.hover; });
+    row.addEventListener('mouseout', () => { row.style.background = C.surface; });
+    row.addEventListener('click', onClick);
+    body.appendChild(row);
+  };
+
+  // Defaults to the generic notes page until the org's API version is known,
+  // then becomes a deep link to that exact release's notes.
+  let releaseNotesUrl = 'https://help.salesforce.com/s/releasenotes';
+  linkRow('📖', 'Release Notes', 'New features & changes', () => window.open(releaseNotesUrl, '_blank'));
+  linkRow('⚙️', 'Release Updates', 'Pending updates in your org (Setup)', () => { window.open(`${lightningOrigin()}/lightning/setup/ReleaseUpdates/home`, '_blank'); });
+  linkRow('🗓️', 'Release Schedule', 'Dates & maintenance windows', () => window.open('https://www.salesforce.com/blog/salesforce-release-dates/', '_blank'));
+
+  getSfCredentials().then((creds: any) => {
+    if (!creds?.instanceUrl || !creds?.sessionId) { relLabel.textContent = 'Session not detected'; relVer.textContent = ''; return; }
+    (globalThis as any).chrome.runtime.sendMessage(
+      { type: 'GET_RELEASE_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+      (resp: any) => {
+        if (resp?.success && resp.data?.label) {
+          relLabel.textContent = resp.data.label;
+          relVer.textContent = resp.data.version ? `API v${resp.data.version} · your org is on this release` : '';
+          // Map API version → release notes number (release = api*2 + 130).
+          const api = parseInt(String(resp.data.version || ''), 10);
+          if (!isNaN(api)) {
+            const releaseNum = api * 2 + 130;
+            releaseNotesUrl = `https://help.salesforce.com/s/articleView?id=release-notes.salesforce_release_notes.htm&release=${releaseNum}&type=5`;
+          }
+        } else {
+          relLabel.textContent = 'Release unavailable';
+          relVer.textContent = resp?.error || '';
+        }
+      }
+    );
+  });
+}
+
+// ─── Org limits: API usage & storage (shown in-extension) ────────────────────
+
+function renderOrgLimitsInto(host: HTMLElement, isDark: boolean, onBack: () => void, opts: { title: string; fields: { key: string; label: string; storage?: boolean }[] }): void {
+  host.innerHTML = '';
+  const C = {
+    track: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.1)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
+  };
+  host.appendChild(toolBackHeader(isDark, opts.title, onBack));
+  const body = document.createElement('div');
+  Object.assign(body.style, { padding: '8px 28px 20px' });
+  host.appendChild(body);
+
+  const msg = (t: string) => { body.innerHTML = ''; const d = document.createElement('div'); Object.assign(d.style, { padding: '40px 0', textAlign: 'center', color: C.textMuted, fontSize: '14px', fontWeight: '600' }); d.textContent = t; body.appendChild(d); };
+  msg('Loading…');
+
+  const fmt = (v: number, storage?: boolean) => {
+    if (storage) return v >= 1024 ? `${(v / 1024).toFixed(2)} GB` : `${Math.round(v)} MB`;
+    return v.toLocaleString();
+  };
+
+  getSfCredentials().then((creds: any) => {
+    if (!creds?.instanceUrl || !creds?.sessionId) { msg('Salesforce session not detected.'); return; }
+    (globalThis as any).chrome.runtime.sendMessage(
+      { type: 'GET_ORG_LIMITS', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+      (resp: any) => {
+        if (!resp?.success || !resp.data) { msg(resp?.error || 'Could not load limits.'); return; }
+        const data = resp.data;
+        const present = opts.fields.filter((f) => data[f.key] && typeof data[f.key].Max === 'number');
+        if (present.length === 0) { msg('No matching limits returned for this org.'); return; }
+        body.innerHTML = '';
+        present.forEach((f) => {
+          const lim = data[f.key];
+          const max = lim.Max || 0;
+          const used = Math.max(0, max - (lim.Remaining ?? max));
+          const pct = max > 0 ? Math.min(100, (used / max) * 100) : 0;
+          const color = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#16a34a';
+
+          const row = document.createElement('div');
+          row.style.marginBottom = '16px';
+          const top = document.createElement('div');
+          Object.assign(top.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' });
+          const lbl = document.createElement('span');
+          lbl.textContent = f.label;
+          Object.assign(lbl.style, { fontSize: '13px', fontWeight: '700', color: C.textPrimary });
+          const val = document.createElement('span');
+          val.textContent = `${fmt(used, f.storage)} / ${fmt(max, f.storage)}`;
+          Object.assign(val.style, { fontSize: '12px', color: C.textMuted, fontWeight: '600' });
+          top.appendChild(lbl); top.appendChild(val);
+
+          const trackEl = document.createElement('div');
+          Object.assign(trackEl.style, { height: '8px', borderRadius: '999px', background: C.track, overflow: 'hidden' });
+          const fill = document.createElement('div');
+          Object.assign(fill.style, { height: '100%', width: `${pct}%`, background: color, borderRadius: '999px', transition: 'width 0.3s' });
+          trackEl.appendChild(fill);
+
+          const pctLbl = document.createElement('div');
+          pctLbl.textContent = `${pct.toFixed(0)}% used · ${fmt(lim.Remaining ?? 0, f.storage)} remaining`;
+          Object.assign(pctLbl.style, { fontSize: '11px', color: C.textFaint, marginTop: '4px' });
+
+          row.appendChild(top); row.appendChild(trackEl); row.appendChild(pctLbl);
+          body.appendChild(row);
+        });
+      }
+    );
+  });
+}
+
 // ─── Spotlight Search ────────────────────────────────────────────────────────
 // Defined BEFORE injectSidebar so it is always in scope when called.
 
@@ -987,8 +1385,8 @@ function buildSpotlight(tabConfig: TabConfig) {
   modal.style.position = 'relative';
   modal.style.width = '100%';
   modal.style.maxWidth = '768px';
-  modal.style.backgroundColor = T.modalBg;
-  modal.style.backdropFilter = 'blur(25px)';
+  // Opaque background, no blur behind the modal.
+  modal.style.backgroundColor = isDark ? '#0f172a' : '#ffffff';
   modal.style.borderRadius = '24px';
   modal.style.boxShadow = '0 25px 50px rgba(0, 0, 0, 0.5)';
   modal.style.border = `1px solid ${T.modalBorder}`;
@@ -1050,10 +1448,12 @@ function buildSpotlight(tabConfig: TabConfig) {
   tabsContainer.style.alignItems = 'center';
 
   let activeTab = tabConfig.defaultTab;
+  // When set (on the Tools tab), a tool detail view is shown in-panel instead of the grid.
+  let toolView: string | null = null;
 
-  // Results container
+  // Results container — fixed height so the modal doesn't resize between tabs.
   const resultsContainer = document.createElement('div');
-  resultsContainer.style.maxHeight = '400px';
+  resultsContainer.style.height = '420px';
   resultsContainer.style.overflowY = 'auto';
   resultsContainer.style.scrollbarWidth = 'thin';
   resultsContainer.style.scrollbarColor = `${T.scrollThumb} transparent`;
@@ -1074,6 +1474,8 @@ function buildSpotlight(tabConfig: TabConfig) {
       #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb:hover { background: ${T.scrollThumbHover}; background-clip: padding-box; }
       #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-corner { background: transparent; }
       #sf-spotlight-input::placeholder { color: ${T.textFaint}; opacity: 1; }
+      #sf-log-analyzer-spotlight-container .sf-star { cursor: pointer; opacity: 0.55; transition: opacity 0.15s, transform 0.15s; padding: 4px; border-radius: 6px; }
+      #sf-log-analyzer-spotlight-container .sf-star:hover { opacity: 1; transform: scale(1.15); }
     `;
   }
 
@@ -1230,7 +1632,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     resultsContainer.appendChild(d);
   };
 
-  const makeResultRow = (opts: { icon: string; title: string; subtitle?: string; meta?: string; first?: boolean; onClick: () => void; }) => {
+  const makeResultRow = (opts: { icon: string; title: string; subtitle?: string; meta?: string; first?: boolean; onClick: () => void; fav?: Omit<RecentItem, 'ts'>; }) => {
     const resultItem = document.createElement('button');
     resultItem.style.width = '100%';
     resultItem.style.padding = '20px 32px';
@@ -1289,13 +1691,44 @@ function buildSpotlight(tabConfig: TabConfig) {
       contentContainer.appendChild(m);
     }
 
+    resultItem.appendChild(iconContainer);
+    resultItem.appendChild(contentContainer);
+
+    // Optional star to pin/unpin this destination. Rendered as a span (not a
+    // button and without an inline cursor:pointer) so it isn't picked up by the
+    // arrow-key navigation selector.
+    if (opts.fav) {
+      const fav = opts.fav;
+      const starWrap = document.createElement('span');
+      starWrap.className = 'sf-star';
+      starWrap.style.flexShrink = '0';
+      starWrap.style.display = 'flex';
+      starWrap.style.alignItems = 'center';
+      const starFilled = `<svg width="18" height="18" viewBox="0 0 24 24" fill="#f5b301" stroke="#f5b301" stroke-width="1.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+      const starOutline = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+      const paint = () => {
+        const on = isFavorite(fav.url, fav.kind);
+        starWrap.innerHTML = on ? starFilled : starOutline;
+        starWrap.title = on ? 'Unpin from favorites' : 'Pin to favorites';
+        starWrap.style.color = on ? '#f5b301' : T.textFaint;
+      };
+      paint();
+      starWrap.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFavorite(fav);
+        paint();
+        // Refresh the Recent tab so the Pinned section reflects the change.
+        if (activeTab === 'recent') performSearch();
+      });
+      resultItem.appendChild(starWrap);
+    }
+
     const externalLink = document.createElement('div');
     externalLink.style.flexShrink = '0';
     externalLink.style.color = T.textMuted;
     externalLink.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>';
 
-    resultItem.appendChild(iconContainer);
-    resultItem.appendChild(contentContainer);
     resultItem.appendChild(externalLink);
 
     resultItem.addEventListener('mouseover', () => {
@@ -1310,6 +1743,89 @@ function buildSpotlight(tabConfig: TabConfig) {
     });
     resultItem.addEventListener('click', opts.onClick);
     return resultItem;
+  };
+
+  // Per-user "⋯" action menu (debug mode, view fields, view details).
+  const openUserMenu = (anchor: HTMLElement, user: { id: string; name: string; email?: string; username?: string }) => {
+    document.getElementById('sf-user-action-menu')?.remove();
+
+    const isDark = currentSpotlightTheme === 'dark';
+    const menuBg = isDark ? '#1e293b' : '#ffffff';
+    const menuBorder = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.15)';
+    const menuText = isDark ? '#f1f5f9' : '#1f2937';
+    const menuHover = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)';
+
+    const menu = document.createElement('div');
+    menu.id = 'sf-user-action-menu';
+    Object.assign(menu.style, {
+      position: 'fixed', minWidth: '210px', background: menuBg, color: menuText,
+      border: `1px solid ${menuBorder}`, borderRadius: '12px', boxShadow: '0 18px 45px rgba(0,0,0,0.35)',
+      padding: '6px', zIndex: '2147483649', fontFamily: 'Inter, system-ui, sans-serif', fontSize: '13px',
+    });
+
+    const setDebugMode = (enabled: boolean) => {
+      getSfCredentials().then((creds: any) => {
+        if (!creds?.instanceUrl || !creds?.sessionId) { flashToast('Salesforce session not detected'); return; }
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'UPDATE_RECORD_FIELD', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, objectApiName: 'User', recordId: user.id, fieldApiName: 'UserPreferencesUserDebugModePref', value: enabled },
+          (resp: any) => {
+            if (resp?.success) flashToast(`Debug mode ${enabled ? 'enabled' : 'disabled'} for ${user.name}`);
+            else flashToast(resp?.error || 'Could not update debug mode');
+          }
+        );
+      });
+    };
+
+    const items: { label: string; icon: string; onClick: () => void }[] = [
+      { label: 'View all fields', icon: '🗂️', onClick: () => showRecordDetail(user.id) },
+      { label: 'Open user detail', icon: '👤', onClick: () => {
+          const url = `${lightningOrigin()}/lightning/setup/ManageUsers/page?address=%2F${user.id}%3Fnoredirect%3D1%26isUserEntityOverride%3D1`;
+          recordRecent({ kind: 'user', icon: '👤', title: user.name, subtitle: user.email || user.username, meta: 'User', url });
+          window.open(url, '_blank');
+          hideSpotlightSearch();
+        } },
+      { label: 'Enable debug mode', icon: '🐞', onClick: () => setDebugMode(true) },
+      { label: 'Disable debug mode', icon: '🚫', onClick: () => setDebugMode(false) },
+    ];
+
+    const closeMenu = () => {
+      menu.remove();
+      document.removeEventListener('keydown', onMenuKey, true);
+      document.removeEventListener('click', onOutside, true);
+    };
+    const onMenuKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu(); } };
+    const onOutside = (e: MouseEvent) => { if (!menu.contains(e.target as Node)) closeMenu(); };
+
+    items.forEach((it) => {
+      const row = document.createElement('button');
+      Object.assign(row.style, {
+        display: 'flex', alignItems: 'center', gap: '10px', width: '100%', padding: '9px 10px',
+        background: 'transparent', border: 'none', borderRadius: '8px', cursor: 'pointer',
+        color: menuText, fontFamily: 'inherit', fontSize: '13px', fontWeight: '600', textAlign: 'left',
+      });
+      row.innerHTML = `<span style="font-size:15px">${it.icon}</span><span>${it.label}</span>`;
+      row.addEventListener('mouseover', () => { row.style.background = menuHover; });
+      row.addEventListener('mouseout', () => { row.style.background = 'transparent'; });
+      row.addEventListener('click', (e) => { e.stopPropagation(); it.onClick(); closeMenu(); });
+      menu.appendChild(row);
+    });
+
+    document.body.appendChild(menu);
+
+    // Position near the anchor, flipping up/left if it would overflow.
+    const rect = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    let top = rect.bottom + 6;
+    let left = rect.right - mw;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, rect.top - mh - 6);
+    if (left < 8) left = 8;
+    menu.style.top = `${top}px`;
+    menu.style.left = `${left}px`;
+
+    setTimeout(() => {
+      document.addEventListener('keydown', onMenuKey, true);
+      document.addEventListener('click', onOutside, true);
+    }, 0);
   };
 
   // ─── Data fetching ─────────────────────────────────────────
@@ -1338,6 +1854,21 @@ function buildSpotlight(tabConfig: TabConfig) {
       console.error('Error fetching Salesforce users:', error);
       return [];
     }
+  };
+
+  // Resolve (once) the Id of the logged-in user so we can pin them to the top.
+  const ensureCurrentUserId = async (): Promise<void> => {
+    if (currentUserId) return;
+    try {
+      const credentials = await getSfCredentials();
+      if (!credentials?.sessionId || !credentials?.instanceUrl) return;
+      currentUserId = await new Promise<string | null>((resolve) => {
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'FETCH_USER_INFO', instanceUrl: credentials.instanceUrl, sessionId: credentials.sessionId },
+          (response: any) => resolve(response?.success && response?.data ? (response.data.id || null) : null)
+        );
+      });
+    } catch { /* ignore */ }
   };
 
   const fetchSalesforceFlows = async (): Promise<any[]> => {
@@ -1547,60 +2078,75 @@ function buildSpotlight(tabConfig: TabConfig) {
     }
 
     if (activeTab === 'recent') {
-      let list = recentItems;
-      if (query.length > 0) {
-        list = recentItems.filter(r =>
-          (r.title || '').toLowerCase().includes(query) ||
-          (r.subtitle || '').toLowerCase().includes(query) ||
-          (r.meta || '').toLowerCase().includes(query)
-        );
-      }
+      const matches = (r: RecentItem) => query.length === 0 ||
+        (r.title || '').toLowerCase().includes(query) ||
+        (r.subtitle || '').toLowerCase().includes(query) ||
+        (r.meta || '').toLowerCase().includes(query);
 
-      if (list.length === 0) {
-        showMessage(recentItems.length === 0
-          ? 'No recent items yet. Anything you open will show up here.'
-          : 'No recent items match your search.');
+      const favs = favoriteItems.filter(matches);
+      const pinnedKeys = new Set(favoriteItems.map(f => `${f.kind}|${f.url}`));
+      const recents = recentItems.filter(r => !pinnedKeys.has(`${r.kind}|${r.url}`)).filter(matches);
+
+      if (favs.length === 0 && recents.length === 0) {
+        showMessage(favoriteItems.length === 0 && recentItems.length === 0
+          ? 'Nothing here yet. Open something, then tap the ☆ to pin it.'
+          : 'Nothing matches your search.');
         return;
       }
 
-      // "Clear recents" action (only when not filtering).
-      if (query.length === 0) {
-        const clearRow = document.createElement('div');
-        clearRow.style.display = 'flex';
-        clearRow.style.justifyContent = 'flex-end';
-        clearRow.style.padding = '10px 32px 0';
-        const clearBtn = document.createElement('button');
-        clearBtn.textContent = 'Clear recents';
-        clearBtn.style.background = 'transparent';
-        clearBtn.style.border = 'none';
-        clearBtn.style.cursor = 'pointer';
-        clearBtn.style.fontSize = '13px';
-        clearBtn.style.fontWeight = '600';
-        clearBtn.style.color = T.textMuted;
-        clearBtn.style.fontFamily = 'inherit';
-        clearBtn.addEventListener('mouseover', () => { clearBtn.style.color = T.textPrimary; });
-        clearBtn.addEventListener('mouseout', () => { clearBtn.style.color = T.textMuted; });
-        clearBtn.addEventListener('click', async () => { clearRecents(); await performSearch(); });
-        clearRow.appendChild(clearBtn);
-        resultsContainer.appendChild(clearRow);
+      const sectionHeader = (label: string, action?: HTMLElement) => {
+        const h = document.createElement('div');
+        h.style.display = 'flex';
+        h.style.alignItems = 'center';
+        h.style.justifyContent = 'space-between';
+        h.style.padding = '12px 32px 6px';
+        const t = document.createElement('span');
+        t.textContent = label;
+        Object.assign(t.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em', color: T.textFaint });
+        h.appendChild(t);
+        if (action) h.appendChild(action);
+        return h;
+      };
+
+      const openRow = (r: RecentItem, first: boolean) => makeResultRow({
+        icon: r.icon || '🕘',
+        title: r.title,
+        subtitle: r.subtitle,
+        meta: r.meta,
+        first,
+        fav: { kind: r.kind, icon: r.icon, title: r.title, subtitle: r.subtitle, meta: r.meta, url: r.url },
+        onClick: () => {
+          recordRecent({ kind: r.kind, icon: r.icon, title: r.title, subtitle: r.subtitle, meta: r.meta, url: r.url });
+          window.open(r.url, '_blank');
+          hideSpotlightSearch();
+        },
+      });
+
+      // Pinned section (above Recent).
+      if (favs.length > 0) {
+        resultsContainer.appendChild(sectionHeader('★ Pinned'));
+        const pinnedList = document.createElement('div');
+        favs.forEach((r, index) => pinnedList.appendChild(openRow(r, index === 0)));
+        resultsContainer.appendChild(pinnedList);
       }
 
-      const resultsList = document.createElement('div');
-      list.forEach((r, index) => {
-        resultsList.appendChild(makeResultRow({
-          icon: r.icon || '🕘',
-          title: r.title,
-          subtitle: r.subtitle,
-          meta: r.meta,
-          first: index === 0,
-          onClick: () => {
-            recordRecent({ kind: r.kind, icon: r.icon, title: r.title, subtitle: r.subtitle, meta: r.meta, url: r.url });
-            window.open(r.url, '_blank');
-            hideSpotlightSearch();
-          },
-        }));
-      });
-      resultsContainer.appendChild(resultsList);
+      // Recent section.
+      if (recents.length > 0) {
+        let clearAction: HTMLElement | undefined;
+        if (query.length === 0) {
+          const clearBtn = document.createElement('button');
+          clearBtn.textContent = 'Clear';
+          Object.assign(clearBtn.style, { background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '600', color: T.textMuted, fontFamily: 'inherit' });
+          clearBtn.addEventListener('mouseover', () => { clearBtn.style.color = T.textPrimary; });
+          clearBtn.addEventListener('mouseout', () => { clearBtn.style.color = T.textMuted; });
+          clearBtn.addEventListener('click', async () => { clearRecents(); await performSearch(); });
+          clearAction = clearBtn;
+        }
+        resultsContainer.appendChild(sectionHeader('Recent', clearAction));
+        const recentList = document.createElement('div');
+        recents.forEach((r, index) => recentList.appendChild(openRow(r, favs.length === 0 && index === 0)));
+        resultsContainer.appendChild(recentList);
+      }
 
     } else if (activeTab === 'setup') {
       if (query.length === 0) {
@@ -1624,18 +2170,17 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       const resultsList = document.createElement('div');
       filtered.forEach((link, index) => {
+        const fullUrl = link.isExternal ? link.link : `${window.location.protocol}//${window.location.hostname}${link.link}`;
+        const entry = { kind: 'setup', icon: '🔗', title: link.label, subtitle: link.section, url: fullUrl };
         const resultItem = makeResultRow({
           icon: '🔗',
           title: link.label,
           subtitle: link.section,
           meta: link.link,
           first: index === 0,
+          fav: entry,
           onClick: () => {
-            const protocol = window.location.protocol;
-            const hostname = window.location.hostname;
-            let fullUrl = `${protocol}//${hostname}${link.link}`;
-            if (link.isExternal) fullUrl = link.link;
-            recordRecent({ kind: 'setup', icon: '🔗', title: link.label, subtitle: link.section, url: fullUrl });
+            recordRecent(entry);
             window.open(fullUrl, '_blank');
             hideSpotlightSearch();
           },
@@ -1667,15 +2212,17 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       const resultsList = document.createElement('div');
       filtered.forEach((o, index) => {
+        const url = `${lightningOrigin()}/lightning/setup/ObjectManager/${encodeURIComponent(o.durableId || o.apiName)}/FieldsAndRelationships/view`;
+        const entry = { kind: 'object', icon: '📦', title: o.label || o.apiName, subtitle: o.apiName, meta: o.keyPrefix ? `Key prefix ${o.keyPrefix}` : undefined, url };
         resultsList.appendChild(makeResultRow({
           icon: '📦',
           title: o.label || o.apiName,
           subtitle: o.apiName,
           meta: o.keyPrefix ? `Key prefix ${o.keyPrefix}` : undefined,
           first: index === 0,
+          fav: entry,
           onClick: () => {
-            const url = `${lightningOrigin()}/lightning/setup/ObjectManager/${encodeURIComponent(o.durableId || o.apiName)}/FieldsAndRelationships/view`;
-            recordRecent({ kind: 'object', icon: '📦', title: o.label || o.apiName, subtitle: o.apiName, meta: o.keyPrefix ? `Key prefix ${o.keyPrefix}` : undefined, url });
+            recordRecent(entry);
             window.open(url, '_blank');
             hideSpotlightSearch();
           },
@@ -1718,15 +2265,17 @@ function buildSpotlight(tabConfig: TabConfig) {
       const resultsList = document.createElement('div');
       filtered.forEach((m, index) => {
         const kindLabel = m.kind === 'mdt' ? 'Custom Metadata' : 'Custom Setting';
+        const url = manageUrl(m);
+        const entry = { kind: 'metadata', icon: m.kind === 'mdt' ? '🧩' : '⚙️', title: m.label || m.apiName, subtitle: m.apiName, meta: kindLabel, url };
         resultsList.appendChild(makeResultRow({
           icon: m.kind === 'mdt' ? '🧩' : '⚙️',
           title: m.label || m.apiName,
           subtitle: `${m.apiName} · Manage records`,
           meta: kindLabel,
           first: index === 0,
+          fav: entry,
           onClick: () => {
-            const url = manageUrl(m);
-            recordRecent({ kind: 'metadata', icon: m.kind === 'mdt' ? '🧩' : '⚙️', title: m.label || m.apiName, subtitle: m.apiName, meta: kindLabel, url });
+            recordRecent(entry);
             window.open(url, '_blank');
             hideSpotlightSearch();
           },
@@ -1736,17 +2285,25 @@ function buildSpotlight(tabConfig: TabConfig) {
 
     } else if (activeTab === 'users') {
       if (!cachedUsers) cachedUsers = await fetchSalesforceUsers();
+      await ensureCurrentUserId();
       const usersList = cachedUsers || [];
 
-      let filtered = usersList;
+      // Always float the logged-in user to the top.
+      const ordered = [...usersList];
+      if (currentUserId) {
+        const idx = ordered.findIndex(u => u.id === currentUserId);
+        if (idx > 0) { const [me] = ordered.splice(idx, 1); ordered.unshift(me); }
+      }
+
+      let filtered = ordered;
       if (query.length > 0) {
-        filtered = usersList.filter(user =>
+        filtered = ordered.filter(user =>
           user.name.toLowerCase().includes(query) ||
           (user.email || '').toLowerCase().includes(query) ||
           (user.username || '').toLowerCase().includes(query)
         );
       } else {
-        filtered = usersList.slice(0, 15);
+        filtered = ordered.slice(0, 15);
       }
 
       if (filtered.length === 0) {
@@ -1775,12 +2332,27 @@ function buildSpotlight(tabConfig: TabConfig) {
         contentContainer.style.flex = '1';
         contentContainer.style.minWidth = '0';
 
+        const isCurrentUser = !!currentUserId && user.id === currentUserId;
         const name = document.createElement('div');
         name.style.fontWeight = '700';
         name.style.fontSize = '15px';
         name.style.color = T.textPrimary;
         name.style.marginBottom = '4px';
-        name.textContent = user.name;
+        name.style.display = 'flex';
+        name.style.alignItems = 'center';
+        name.style.gap = '8px';
+        const nameText = document.createElement('span');
+        nameText.textContent = user.name;
+        name.appendChild(nameText);
+        if (isCurrentUser) {
+          const youBadge = document.createElement('span');
+          youBadge.textContent = 'You';
+          Object.assign(youBadge.style, {
+            fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em',
+            color: '#fff', background: '#2563eb', padding: '2px 7px', borderRadius: '999px',
+          });
+          name.appendChild(youBadge);
+        }
 
         const email = document.createElement('div');
         email.style.fontSize = '12px';
@@ -1884,8 +2456,25 @@ function buildSpotlight(tabConfig: TabConfig) {
         arrowIcon.style.alignItems = 'center';
         arrowIcon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
 
-        buttonGroup.appendChild(loginBtn);
-        buttonGroup.appendChild(incognitoBtn);
+        // "⋯" menu with extra per-user actions (debug mode, view fields, details).
+        const moreBtn = document.createElement('button');
+        moreBtn.title = 'More actions';
+        moreBtn.textContent = '⋯';
+        Object.assign(moreBtn.style, {
+          padding: '6px 10px', backgroundColor: T.surface, color: T.textPrimary, border: 'none',
+          borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: '700', lineHeight: '1',
+          whiteSpace: 'nowrap', flexShrink: '0',
+        });
+        moreBtn.addEventListener('mouseover', () => { moreBtn.style.backgroundColor = T.surfaceHover; });
+        moreBtn.addEventListener('mouseout', () => { moreBtn.style.backgroundColor = T.surface; });
+        moreBtn.addEventListener('click', (e) => { e.stopPropagation(); openUserMenu(moreBtn, user); });
+
+        // Login / Incognito don't make sense for yourself — only show for others.
+        if (!isCurrentUser) {
+          buttonGroup.appendChild(loginBtn);
+          buttonGroup.appendChild(incognitoBtn);
+        }
+        buttonGroup.appendChild(moreBtn);
         resultItem.appendChild(contentContainer);
         resultItem.appendChild(arrowIcon);
         resultItem.appendChild(buttonGroup);
@@ -1947,19 +2536,20 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       const resultsList = document.createElement('div');
       filtered.forEach((s, index) => {
+        const origin = lightningOrigin();
+        let path = `/lightning/setup/PermSets/page?address=%2F${s.id}`;
+        if (s.type === 'Profile') path = `/lightning/setup/EnhancedProfiles/page?address=%2F${s.id}`;
+        else if (s.type === 'Permission Set Group') path = `/lightning/setup/PermSetGroups/page?address=%2F${s.id}`;
+        const entry = { kind: 'security', icon: iconFor(s.type), title: s.label || s.name, subtitle: (s.name && s.name !== s.label) ? s.name : undefined, meta: s.type, url: origin + path };
         resultsList.appendChild(makeResultRow({
           icon: iconFor(s.type),
           title: s.label || s.name,
           subtitle: (s.name && s.name !== s.label) ? s.name : undefined,
           meta: s.type,
           first: index === 0,
+          fav: entry,
           onClick: () => {
-            const origin = lightningOrigin();
-            let path = '';
-            if (s.type === 'Profile') path = `/lightning/setup/EnhancedProfiles/page?address=%2F${s.id}`;
-            else if (s.type === 'Permission Set Group') path = `/lightning/setup/PermSetGroups/page?address=%2F${s.id}`;
-            else path = `/lightning/setup/PermSets/page?address=%2F${s.id}`;
-            recordRecent({ kind: 'security', icon: iconFor(s.type), title: s.label || s.name, subtitle: (s.name && s.name !== s.label) ? s.name : undefined, meta: s.type, url: origin + path });
+            recordRecent(entry);
             window.open(origin + path, '_blank');
             hideSpotlightSearch();
           },
@@ -1988,29 +2578,29 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       const resultsList = document.createElement('div');
       filtered.forEach((flow, index) => {
+        const origin = lightningOrigin();
+        const isManaged = !!flow.manageableState && flow.manageableState !== 'unmanaged';
+        let flowId = '';
+        if (isManaged && flow.apiName && flow.versionNumber) {
+          const ns = flow.namespacePrefix;
+          const fullApiName = (ns && !flow.apiName.startsWith(`${ns}__`)) ? `${ns}__${flow.apiName}` : flow.apiName;
+          flowId = `${fullApiName}-${flow.versionNumber}`;
+        } else if (flow.versionId) {
+          flowId = flow.versionId;
+        }
+        const flowUrl = flowId
+          ? `${origin}/builder_platform_interaction/flowBuilder.app?flowId=${flowId}`
+          : `${origin}/lightning/setup/Flows/home`;
+        const entry = { kind: 'flow', icon: '⚡', title: flow.label, subtitle: flow.apiName, meta: `${flow.processType || 'Flow'} · ${flow.isActive ? 'Active' : 'Inactive'}`, url: flowUrl };
         resultsList.appendChild(makeResultRow({
           icon: '⚡',
           title: flow.label,
           subtitle: flow.apiName,
           meta: `${flow.processType || 'Flow'} · ${flow.isActive ? 'Active' : 'Inactive'}`,
           first: index === 0,
+          fav: entry,
           onClick: () => {
-            const origin = lightningOrigin();
-            const isManaged = !!flow.manageableState && flow.manageableState !== 'unmanaged';
-            let flowId = '';
-            if (isManaged && flow.apiName && flow.versionNumber) {
-              const ns = flow.namespacePrefix;
-              const fullApiName = (ns && !flow.apiName.startsWith(`${ns}__`))
-                ? `${ns}__${flow.apiName}`
-                : flow.apiName;
-              flowId = `${fullApiName}-${flow.versionNumber}`;
-            } else if (flow.versionId) {
-              flowId = flow.versionId;
-            }
-            const flowUrl = flowId
-              ? `${origin}/builder_platform_interaction/flowBuilder.app?flowId=${flowId}`
-              : `${origin}/lightning/setup/Flows/home`;
-            recordRecent({ kind: 'flow', icon: '⚡', title: flow.label, subtitle: flow.apiName, meta: `${flow.processType || 'Flow'} · ${flow.isActive ? 'Active' : 'Inactive'}`, url: flowUrl });
+            recordRecent(entry);
             window.open(flowUrl, '_blank');
             hideSpotlightSearch();
           },
@@ -2047,28 +2637,192 @@ function buildSpotlight(tabConfig: TabConfig) {
       const resultsList = document.createElement('div');
       filtered.forEach((a, index) => {
         const isApp = a.type === 'app';
+        const url = buildAppUrl(a.url, isApp);
+        const entry = { kind: 'app', icon: isApp ? '🚀' : '📑', title: a.label || a.name, subtitle: (a.name && a.name !== a.label) ? a.name : undefined, meta: isApp ? 'App' : 'Tab', url };
         resultsList.appendChild(makeResultRow({
           icon: isApp ? '🚀' : '📑',
           title: a.label || a.name,
           subtitle: (a.name && a.name !== a.label) ? a.name : undefined,
           meta: isApp ? 'App' : 'Tab',
           first: index === 0,
+          fav: entry,
           onClick: () => {
-            const url = buildAppUrl(a.url, isApp);
-            recordRecent({ kind: 'app', icon: isApp ? '🚀' : '📑', title: a.label || a.name, subtitle: (a.name && a.name !== a.label) ? a.name : undefined, meta: isApp ? 'App' : 'Tab', url });
+            recordRecent(entry);
             window.open(url, '_blank');
             hideSpotlightSearch();
           },
         }));
       });
       resultsContainer.appendChild(resultsList);
+
+    } else if (activeTab === 'tools') {
+      const API_FIELDS = [
+        { key: 'DailyApiRequests', label: 'REST / SOAP API requests (daily)' },
+        { key: 'DailyBulkApiBatches', label: 'Bulk API batches (daily)' },
+        { key: 'DailyBulkV2QueryJobs', label: 'Bulk API v2 query jobs (daily)' },
+        { key: 'DailyStreamingApiEvents', label: 'Streaming API events (daily)' },
+        { key: 'DailyAsyncApexExecutions', label: 'Async Apex executions (daily)' },
+        { key: 'HourlyTimeBasedWorkflow', label: 'Time-based workflow (hourly)' },
+      ];
+      const STORAGE_FIELDS = [
+        { key: 'DataStorageMB', label: 'Data storage', storage: true },
+        { key: 'FileStorageMB', label: 'File storage', storage: true },
+      ];
+
+      // A tool's detail view is shown in-panel (with a "Tools" back button).
+      // Typing a query exits back to the grid.
+      if (query.length > 0) toolView = null;
+      if (toolView) {
+        const isDark = currentSpotlightTheme === 'dark';
+        const onBack = () => { toolView = null; performSearch(); };
+        if (toolView === 'orgdetails') { renderOrgDetailsInto(resultsContainer, isDark, onBack); return; }
+        if (toolView === 'release') { renderReleaseInfoInto(resultsContainer, isDark, onBack); return; }
+        if (toolView === 'apiusage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '📊  API Usage', fields: API_FIELDS }); return; }
+        if (toolView === 'storage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '💾  Storage Insights', fields: STORAGE_FIELDS }); return; }
+        toolView = null;
+      }
+
+      // App-drawer style grid of quick org actions. Items are either one-shot
+      // actions (run) or persisted on/off toggles (toggleKey).
+      type ToolItem = { id: string; icon: string; label: string; desc: string; run?: () => void; toggleKey?: keyof ToolsState };
+      const tools: ToolItem[] = [
+        {
+          id: 'speedtest', icon: '🏎️', label: 'Org Speed Test', desc: 'Run Salesforce speed test',
+          run: () => {
+            const url = `${lightningOrigin()}/speedtest.jsp`;
+            recordRecent({ kind: 'tool', icon: '🏎️', title: 'Org Speed Test', subtitle: 'speedtest.jsp', meta: 'Tool', url });
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        },
+        {
+          id: 'classic', icon: '🕹️', label: 'Switch to Classic', desc: 'Open Salesforce Classic',
+          run: () => {
+            const url = `${lightningOrigin()}/ltng/switcher?destination=classic`;
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        },
+        {
+          id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'View this org’s info',
+          run: () => { searchInput.value = ''; toolView = 'orgdetails'; performSearch(); },
+        },
+        {
+          id: 'release', icon: '🚀', label: 'Salesforce Release', desc: 'Current release & updates',
+          run: () => { searchInput.value = ''; toolView = 'release'; performSearch(); },
+        },
+        {
+          id: 'apiusage', icon: '📊', label: 'API Usage', desc: 'Daily API limits',
+          run: () => { searchInput.value = ''; toolView = 'apiusage'; performSearch(); },
+        },
+        {
+          id: 'storage', icon: '💾', label: 'Storage Insights', desc: 'Data & file storage',
+          run: () => { searchInput.value = ''; toolView = 'storage'; performSearch(); },
+        },
+        {
+          id: 'ghost', icon: '👻', label: 'Ghost Session', desc: 'Open your session in Incognito',
+          run: () => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { flashToast('Salesforce session not detected'); return; }
+              const retUrl = window.location.pathname || '/';
+              const frontdoorUrl = `${creds.instanceUrl}/secur/frontdoor.jsp?sid=${encodeURIComponent(creds.sessionId)}&retURL=${encodeURIComponent(retUrl)}`;
+              (globalThis as any).chrome.runtime.sendMessage({ type: 'OPEN_INCOGNITO_TAB', url: frontdoorUrl });
+              hideSpotlightSearch();
+            });
+          },
+        },
+        { id: 'fieldapi', icon: '🏷️', label: 'Show Field API Names', desc: 'On record pages', toggleKey: 'showFieldApi' },
+        { id: 'devbar', icon: '🛑', label: 'Hide App Dev Bar', desc: 'Hide the dev toolbar', toggleKey: 'hideDevBar' },
+        { id: 'loginad', icon: '🙈', label: 'Hide Login Page Ad', desc: 'Cleaner login page', toggleKey: 'hideLoginAd' },
+        {
+          id: 'whatsnew', icon: '✨', label: "What's New", desc: 'See the latest features',
+          run: () => {
+            const version = (globalThis as any).chrome?.runtime?.getManifest?.().version || '';
+            hideSpotlightSearch();
+            showWhatsNew(version);
+          },
+        },
+      ];
+
+      const filtered = query.length > 0
+        ? tools.filter(t => t.label.toLowerCase().includes(query) || t.desc.toLowerCase().includes(query))
+        : tools;
+
+      if (filtered.length === 0) { showMessage('No tools match your search.'); return; }
+
+      const strongBorder = currentSpotlightTheme === 'dark' ? 'rgba(148,163,184,0.35)' : 'rgba(31,41,55,0.18)';
+
+      const grid = document.createElement('div');
+      Object.assign(grid.style, {
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+        gap: '12px', padding: '20px 28px 24px',
+      });
+
+      filtered.forEach((t) => {
+        const isToggle = !!t.toggleKey;
+        const isOn = isToggle && toolsState[t.toggleKey as keyof ToolsState];
+
+        const tile = document.createElement('button');
+        const baseBg = isOn ? 'rgba(37,99,235,0.12)' : T.surface;
+        const baseBorder = isOn ? `2px solid ${T.accent}` : `1.5px solid ${strongBorder}`;
+        Object.assign(tile.style, {
+          position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          gap: '8px', padding: '20px 12px', borderRadius: '16px', border: baseBorder,
+          background: baseBg, cursor: 'pointer', fontFamily: 'inherit', color: T.textPrimary,
+          transition: 'all 0.15s', textAlign: 'center',
+        });
+
+        // Toggle status dot (filled when on).
+        if (isToggle) {
+          const dot = document.createElement('span');
+          Object.assign(dot.style, {
+            position: 'absolute', top: '10px', right: '10px', width: '12px', height: '12px', borderRadius: '50%',
+            background: isOn ? T.accent : 'transparent', border: `2px solid ${isOn ? T.accent : strongBorder}`,
+          });
+          tile.appendChild(dot);
+        }
+
+        const ic = document.createElement('div');
+        ic.textContent = t.icon;
+        Object.assign(ic.style, { fontSize: '32px', lineHeight: '1' });
+        const lb = document.createElement('div');
+        lb.textContent = t.label;
+        Object.assign(lb.style, { fontSize: '13px', fontWeight: '700' });
+        const ds = document.createElement('div');
+        ds.textContent = isToggle ? (isOn ? 'On' : t.desc) : t.desc;
+        Object.assign(ds.style, { fontSize: '11px', color: isOn ? T.accent : T.textMuted, fontWeight: isOn ? '700' : '400' });
+        tile.appendChild(ic); tile.appendChild(lb); tile.appendChild(ds);
+
+        tile.addEventListener('mouseover', () => { tile.style.transform = 'translateY(-2px)'; if (!isOn) tile.style.background = T.surfaceHover; });
+        tile.addEventListener('mouseout', () => { tile.style.transform = 'none'; tile.style.background = baseBg; });
+        tile.addEventListener('click', () => {
+          if (isToggle) {
+            const key = t.toggleKey as keyof ToolsState;
+            toolsState[key] = !toolsState[key];
+            saveToolsState();
+            applyToolToggle(key);
+            flashToast(`${t.label}: ${toolsState[key] ? 'On' : 'Off'}`);
+            performSearch();
+          } else {
+            t.run?.();
+          }
+        });
+        grid.appendChild(tile);
+      });
+      resultsContainer.appendChild(grid);
     }
   };
 
   // ─── Tab bar (dynamic) ─────────────────────────────────────
-  const makeTabButton = (text: string) => {
+  const makeTabButton = (text: string, icon?: string) => {
     const b = document.createElement('button');
-    b.textContent = text;
+    if (icon) {
+      b.innerHTML = `<span style="margin-right:6px;font-size:14px">${icon}</span><span>${text}</span>`;
+    } else {
+      b.textContent = text;
+    }
+    b.style.display = 'inline-flex';
+    b.style.alignItems = 'center';
     b.style.color = T.tabInactive;
     b.style.borderBottom = '3px solid transparent';
     b.style.padding = '12px 0';
@@ -2095,6 +2849,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   const activateTab = async (id: string) => {
     activeTab = id;
     selectedIndex = -1;
+    toolView = null;
     Object.keys(tabButtons).forEach(tid => styleTabButton(tabButtons[tid], tid === id));
 
     if (id === '__settings') {
@@ -2122,20 +2877,102 @@ function buildSpotlight(tabConfig: TabConfig) {
     searchInput.focus();
   };
 
+  // Dropdown listing the overflow tabs that didn't fit in the bar.
+  const openTabOverflowMenu = (anchor: HTMLElement, ids: string[]) => {
+    document.getElementById('sf-tab-overflow-menu')?.remove();
+    const isDark = currentSpotlightTheme === 'dark';
+    const menuBg = isDark ? '#1e293b' : '#ffffff';
+    const menuBorder = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.15)';
+    const menuText = isDark ? '#f1f5f9' : '#1f2937';
+    const menuHover = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)';
+
+    const menu = document.createElement('div');
+    menu.id = 'sf-tab-overflow-menu';
+    Object.assign(menu.style, {
+      position: 'fixed', minWidth: '180px', background: menuBg, color: menuText,
+      border: `1px solid ${menuBorder}`, borderRadius: '12px', boxShadow: '0 18px 45px rgba(0,0,0,0.35)',
+      padding: '6px', zIndex: '2147483649', fontFamily: 'Inter, system-ui, sans-serif', fontSize: '13px',
+    });
+
+    const close = () => {
+      menu.remove();
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('click', onOut, true);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+    const onOut = (e: MouseEvent) => { if (!menu.contains(e.target as Node) && e.target !== anchor) close(); };
+
+    ids.forEach((id) => {
+      const def = ALL_SPOTLIGHT_TABS.find(t => t.id === id);
+      if (!def) return;
+      const row = document.createElement('button');
+      Object.assign(row.style, {
+        display: 'block', width: '100%', padding: '9px 12px', background: 'transparent', border: 'none',
+        borderRadius: '8px', cursor: 'pointer', color: menuText, fontFamily: 'inherit', fontSize: '13px',
+        fontWeight: activeTab === id ? '800' : '600', textAlign: 'left',
+      });
+      row.innerHTML = `<span style="margin-right:8px">${def.icon}</span><span>${def.label}</span>`;
+      row.addEventListener('mouseover', () => { row.style.background = menuHover; });
+      row.addEventListener('mouseout', () => { row.style.background = 'transparent'; });
+      row.addEventListener('click', async (e) => { e.stopPropagation(); close(); await activateTab(id); renderTabBar(); });
+      menu.appendChild(row);
+    });
+
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    const mh = menu.offsetHeight;
+    let top = rect.bottom + 6;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, rect.top - mh - 6);
+    menu.style.top = `${top}px`;
+    menu.style.left = `${Math.max(8, rect.left)}px`;
+    setTimeout(() => {
+      document.addEventListener('keydown', onKey, true);
+      document.addEventListener('click', onOut, true);
+    }, 0);
+  };
+
+  // Show at most this many tabs in the bar; the rest go under "More ▾".
+  const MAX_VISIBLE_TABS = 6;
+
   const renderTabBar = () => {
     tabsContainer.innerHTML = '';
     Object.keys(tabButtons).forEach(k => delete tabButtons[k]);
 
-    tabConfig.order.forEach(id => {
-      if (tabConfig.hidden.includes(id)) return;
+    const visibleIds = tabConfig.order.filter(id => !tabConfig.hidden.includes(id) && ALL_SPOTLIGHT_TABS.some(t => t.id === id));
+
+    let primary = visibleIds;
+    let overflow: string[] = [];
+    if (visibleIds.length > MAX_VISIBLE_TABS) {
+      primary = visibleIds.slice(0, MAX_VISIBLE_TABS);
+      overflow = visibleIds.slice(MAX_VISIBLE_TABS);
+      // Ensure the active tab is always visible — swap it into the last slot.
+      if (activeTab && overflow.includes(activeTab)) {
+        const lastPrimary = primary[primary.length - 1];
+        primary[primary.length - 1] = activeTab;
+        overflow = overflow.filter(id => id !== activeTab);
+        overflow.unshift(lastPrimary);
+      }
+    }
+
+    primary.forEach(id => {
       const def = ALL_SPOTLIGHT_TABS.find(t => t.id === id);
       if (!def) return;
-      const b = makeTabButton(def.label);
+      const b = makeTabButton(def.label, def.icon);
+      b.style.whiteSpace = 'nowrap';
       styleTabButton(b, activeTab === id);
       b.addEventListener('click', () => activateTab(id));
       tabButtons[id] = b;
       tabsContainer.appendChild(b);
     });
+
+    if (overflow.length > 0) {
+      const moreBtn = makeTabButton('More ▾');
+      moreBtn.style.whiteSpace = 'nowrap';
+      styleTabButton(moreBtn, false);
+      moreBtn.addEventListener('click', (e) => { e.stopPropagation(); openTabOverflowMenu(moreBtn, overflow); });
+      tabButtons['__more'] = moreBtn;
+      tabsContainer.appendChild(moreBtn);
+    }
 
     const gear = makeTabButton('⚙');
     gear.style.fontSize = '18px';
@@ -2465,11 +3302,12 @@ function injectSidebar() {
 
     backdrop.addEventListener('click', () => closePanel());
 
-    // Clicking the toolbar icon (handled in background) opens the panel.
+    // Clicking the toolbar icon (handled in background) opens Spotlight.
     if (chromeRuntime.onMessage) {
       chromeRuntime.onMessage.addListener((msg: any) => {
         if (msg?.type === 'SF_TOOLBAR_OPEN' && window.top === window) {
-          openPanel();
+          showSpotlightSearch();
+          maybeShowWhatsNew();
         }
       });
     }
