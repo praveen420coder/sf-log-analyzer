@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChevronRight, Info, Activity, Copy, Download } from 'lucide-react';
+import { ChevronRight, Copy, Download, WrapText } from 'lucide-react';
 import type { Log } from '../../types';
 import { ApexLogParser, formatDuration } from '../../utils/apexLogParser';
 import type { ParsedLog } from '../../utils/apexLogParser';
@@ -14,7 +14,8 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
   const [copied, setCopied] = useState(false);
   const [selectedFilters, setSelectedFilters] = useState<Set<string>>(new Set());
   const [searchText, setSearchText] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'complete' | 'tree' | 'timeline' | 'soql' | 'insights'>('tree');
+  const [activeTab, setActiveTab] = useState<'complete' | 'tree' | 'timeline' | 'soql' | 'insights'>('complete');
+  const [wrapLines, setWrapLines] = useState<boolean>(false);
   const [parsedLog, setParsedLog] = useState<ParsedLog | null>(null);
   const [insights, setInsights] = useState<PerformanceInsight[]>([]);
   const [metrics, setMetrics] = useState<LogMetrics | null>(null);
@@ -219,185 +220,158 @@ const DetailView: React.FC<{ log: Log; onBack: () => void; instanceUrl?: string 
     document.body.removeChild(element);
   };
 
+  const tabs = [
+    { id: 'complete', label: 'Raw Log' },
+    { id: 'insights', label: '⚡ Insights' },
+    { id: 'tree', label: 'Call Tree' },
+    { id: 'timeline', label: 'Timeline' },
+    { id: 'soql', label: 'SOQL' },
+  ] as const;
+
   return (
-    <div className="space-y-10 animate-in fade-in slide-in-from-right-8 duration-500 max-w-2xl mx-auto text-black">
-      <button 
-        onClick={onBack}
-        className="group flex items-center space-x-3 text-[10px] font-black uppercase tracking-[0.2em] text-black"
-      >
-        <div className="w-10 h-10 rounded-full border-2 border-black flex items-center justify-center group-hover:bg-black group-hover:text-white transition-all">
-          <ChevronRight size={18} className="rotate-180" />
-        </div>
-        <span>Back to records</span>
-      </button>
+    <div className="flex flex-col h-full text-black animate-in fade-in duration-300">
+      {/* Compact header */}
+      <div className="flex items-center gap-3 mb-2 flex-shrink-0">
+        <button
+          onClick={onBack}
+          title="Back to records"
+          className="group flex items-center justify-center w-8 h-8 rounded-full border-2 border-black hover:bg-black hover:text-white transition-all flex-shrink-0"
+        >
+          <ChevronRight size={16} className="rotate-180" />
+        </button>
+        <h2 className="text-xl font-black uppercase tracking-tight truncate flex-1 min-w-0">{logId}</h2>
+        <span className={`px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 border-black whitespace-nowrap ${
+          logStatus.includes('Error') ? 'bg-black text-white' : 'bg-transparent text-black'
+        }`}>
+          {logStatus}
+        </span>
+      </div>
 
-      <div className="space-y-8">
-        <div className="flex items-center justify-between">
-          <h2 className="text-4xl font-black uppercase tracking-tighter text-black">{logId}</h2>
-          <div className={`px-5 py-2 rounded-2xl text-xs font-black uppercase tracking-widest border-2 border-black ${
-            logStatus.includes('Error') ? 'bg-black text-white' : 'bg-transparent text-black'
-          }`}>
-            {logStatus}
+      {/* Compact metadata bar */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mb-3 text-[11px] flex-shrink-0">
+        <span><span className="font-bold text-gray-400 uppercase tracking-wider mr-1.5">Time</span><span className="font-bold text-black">{logTime}</span></span>
+        <span className="text-gray-300">·</span>
+        <span><span className="font-bold text-gray-400 uppercase tracking-wider mr-1.5">Size</span><span className="font-bold text-black">{logSize}</span></span>
+        <span className="text-gray-300">·</span>
+        <span><span className="font-bold text-gray-400 uppercase tracking-wider mr-1.5">Op</span><span className="font-bold text-black">{logOperation}</span></span>
+      </div>
+
+      {/* Log / analysis panel — fills the remaining height */}
+      <div className="flex-1 min-h-0 flex flex-col bg-zinc-900 rounded-xl overflow-hidden shadow-lg">
+        {/* Sticky toolbar */}
+        <div className="flex-shrink-0 border-b border-zinc-700">
+          {/* Tabs */}
+          <div className="flex gap-1 px-3 pt-1 overflow-x-auto">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-3 py-2 text-[11px] font-black uppercase tracking-wider border-b-2 transition-colors whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? 'border-blue-500 text-blue-400'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
-        </div>
 
-        <div className="grid grid-cols-1 gap-6">
-          <div className="border-[3px] border-black rounded-[2rem] p-8 space-y-6">
-            <h3 className="text-[10px] font-black uppercase tracking-[0.3em] flex items-center border-b-2 border-black/10 pb-4 text-black">
-              <Info size={16} className="mr-2" /> Attributes
-            </h3>
-            <div className="grid grid-cols-2 gap-y-6 gap-x-12 text-black">
-              {[
-                { l: 'Timestamp', v: logTime },
-                { l: 'Payload Size', v: logSize },
-                { l: 'Operation', v: logOperation },
-                { l: 'Status', v: logStatus }
-              ].map((item, i) => (
-                <div key={i} className="flex flex-col space-y-1">
-                  <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">{item.l}</span>
-                  <span className="text-sm font-black">{item.v}</span>
-                </div>
+          {/* Controls row */}
+          <div className="flex items-center gap-2 px-3 py-2">
+            {activeTab === 'complete' ? (
+              <>
+                <input
+                  type="text"
+                  placeholder="Search log..."
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  className="flex-1 min-w-0 px-3 py-1.5 text-[11px] bg-zinc-800 border border-zinc-700 rounded text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                {searchText && (
+                  <button
+                    onClick={() => setSearchText('')}
+                    className="px-2 py-1 text-[10px] font-black uppercase tracking-wider bg-zinc-800 border border-zinc-700 text-zinc-400 rounded hover:border-zinc-600 transition-colors whitespace-nowrap"
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
+                  onClick={() => setWrapLines((w) => !w)}
+                  title={wrapLines ? 'Disable line wrap' : 'Enable line wrap'}
+                  className={`p-1.5 rounded border transition-colors flex-shrink-0 ${
+                    wrapLines ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                  }`}
+                >
+                  <WrapText size={14} />
+                </button>
+              </>
+            ) : (
+              <span className="flex-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                {activeTab === 'tree' ? 'Call Tree' : activeTab === 'timeline' ? 'Timeline View' : activeTab === 'soql' ? 'SOQL Queries' : 'Performance Insights'}
+              </span>
+            )}
+            <button onClick={copyToClipboard} className="p-1.5 hover:bg-white/10 rounded transition-colors flex-shrink-0" title="Copy to clipboard">
+              <Copy size={14} className={copied ? 'text-green-400' : 'text-white/60'} />
+            </button>
+            <button onClick={downloadLog} className="p-1.5 hover:bg-white/10 rounded transition-colors flex-shrink-0" title="Download">
+              <Download size={14} className="text-white/60" />
+            </button>
+          </div>
+
+          {/* Filters — Raw Log only */}
+          {activeTab === 'complete' && (
+            <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+              {filters.map((filter) => (
+                <button
+                  key={filter.id}
+                  onClick={() => toggleFilter(filter.id)}
+                  className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded border transition-colors ${
+                    selectedFilters.has(filter.id)
+                      ? 'bg-blue-600 border-blue-600 text-white'
+                      : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                  }`}
+                >
+                  {filter.label}
+                </button>
               ))}
             </div>
-          </div>
+          )}
+        </div>
 
-          <div className="bg-zinc-900 rounded-[2rem] p-8 space-y-6 shadow-xl text-zinc-300">
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[10px] font-black uppercase tracking-[0.3em] flex items-center text-white/60">
-                  <Activity size={16} className="mr-2" /> Log Analysis
-                </h3>
-              </div>
-
-              {/* Tabs */}
-              <div className="flex gap-2 border-b border-zinc-700 overflow-x-auto">
-                {[
-                  { id: 'insights', label: '⚡ Insights' },
-                  { id: 'tree', label: 'Call Tree' },
-                  { id: 'timeline', label: 'Timeline' },
-                  { id: 'soql', label: 'SOQL Queries' },
-                  { id: 'complete', label: 'Raw Log' }
-                ].map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id as 'complete' | 'tree' | 'timeline' | 'soql' | 'insights')}
-                    className={`px-4 py-2 text-[9px] font-black uppercase tracking-[0.15em] border-b-2 transition-colors whitespace-nowrap ${
-                      activeTab === tab.id
-                        ? 'border-blue-500 text-blue-400'
-                        : 'border-transparent text-zinc-400 hover:text-zinc-300'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Search Input - only show for complete log tab */}
-              {activeTab === 'complete' && (
-                <div className="flex items-center">
-                  <input
-                    type="text"
-                    placeholder="Search log..."
-                    value={searchText}
-                    onChange={(e) => setSearchText(e.target.value)}
-                    className="flex-1 px-3 py-2 text-[9px] bg-zinc-800 border border-zinc-700 rounded text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition-colors"
+        {/* Content — scrolls, fills available height */}
+        <div className="flex-1 min-h-0 overflow-auto">
+          {isLoading ? (
+            <div className="text-center py-12 text-zinc-500 text-sm">Loading log details...</div>
+          ) : (
+            <>
+              {activeTab === 'insights' && (
+                <div className="bg-white m-3 p-4 rounded-lg">
+                  <InsightsView
+                    insights={insights}
+                    metrics={metrics || { totalSoqlTime: 0, totalDmlTime: 0 }}
+                    isAnalyzing={isAnalyzing}
                   />
-                  {searchText && (
-                    <button
-                      onClick={() => setSearchText('')}
-                      className="ml-2 px-2 py-1 text-[9px] font-black uppercase tracking-[0.15em] bg-zinc-800 border border-zinc-700 text-zinc-400 rounded hover:border-zinc-600 transition-colors"
-                    >
-                      Clear
-                    </button>
-                  )}
                 </div>
               )}
-
-              {/* Filter Buttons - only show for complete log tab */}
+              {activeTab === 'tree' && parsedLog && (
+                <div className="p-3"><TreeView nodes={parsedLog.methodTree} /></div>
+              )}
+              {activeTab === 'timeline' && parsedLog && (
+                <div className="p-3"><TimelineView events={parsedLog.timeline} /></div>
+              )}
+              {activeTab === 'soql' && (
+                <pre className="text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-zinc-200 p-4">
+                  {parseSoqlQueries(logBody)}
+                </pre>
+              )}
               {activeTab === 'complete' && (
-                <div className="flex flex-wrap gap-2">
-                  {filters.map((filter) => (
-                    <button
-                      key={filter.id}
-                      onClick={() => toggleFilter(filter.id)}
-                      className={`px-3 py-1 text-[9px] font-black uppercase tracking-[0.15em] rounded border transition-colors ${
-                        selectedFilters.has(filter.id)
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-zinc-600'
-                      }`}
-                    >
-                      {filter.label}
-                    </button>
-                  ))}
-                </div>
+                <pre className={`text-[13px] font-mono leading-relaxed text-zinc-200 p-4 ${wrapLines ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`}>
+                  {filterLogBody(logBody) || 'No log body available'}
+                </pre>
               )}
-
-              {/* Copy and Download Buttons */}
-              <div className="flex items-center justify-between border-t border-white/10 pt-4">
-                <span className="text-[9px] text-zinc-500">
-                  {activeTab === 'complete' && (searchText || selectedFilters.size > 0) 
-                    ? `Filtered view` 
-                    : activeTab === 'tree' 
-                    ? 'Call Tree' 
-                    : activeTab === 'timeline' 
-                    ? 'Timeline View' 
-                    : activeTab === 'soql' 
-                    ? 'SOQL Queries' 
-                    : 'Full log'}
-                </span>
-                <div className="flex items-center space-x-2">
-                  <button
-                    onClick={copyToClipboard}
-                    className="p-2 hover:bg-white/10 rounded transition-colors"
-                    title="Copy to clipboard"
-                  >
-                    <Copy size={14} className={copied ? 'text-green-400' : 'text-white/60'} />
-                  </button>
-                  <button
-                    onClick={downloadLog}
-                    className="p-2 hover:bg-white/10 rounded transition-colors"
-                    title="Download log"
-                  >
-                    <Download size={14} className="text-white/60" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {isLoading ? (
-              <div className="text-center py-8">
-                <p className="text-zinc-500">Loading log details...</p>
-              </div>
-            ) : (
-              <div className="max-h-[500px] overflow-y-auto">
-                {activeTab === 'insights' && (
-                  <div className="bg-white p-6 rounded-lg">
-                    <InsightsView 
-                      insights={insights}
-                      metrics={metrics || { totalSoqlTime: 0, totalDmlTime: 0 }}
-                      isAnalyzing={isAnalyzing}
-                    />
-                  </div>
-                )}
-                {activeTab === 'tree' && parsedLog && (
-                  <TreeView nodes={parsedLog.methodTree} />
-                )}
-                {activeTab === 'timeline' && parsedLog && (
-                  <TimelineView events={parsedLog.timeline} />
-                )}
-                {activeTab === 'soql' && (
-                  <pre className="text-[11px] font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed text-zinc-300 bg-zinc-950 p-4 rounded border border-zinc-700">
-                    {parseSoqlQueries(logBody)}
-                  </pre>
-                )}
-                {activeTab === 'complete' && (
-                  <pre className="text-[11px] font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed text-zinc-300 bg-zinc-950 p-4 rounded border border-zinc-700">
-                    {filterLogBody(logBody) || 'No log body available'}
-                  </pre>
-                )}
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </div>
     </div>
