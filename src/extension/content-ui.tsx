@@ -281,6 +281,625 @@ function getSfCredentials(): Promise<any> {
   });
 }
 
+// ─── Record ID detection & Record Detail viewer ──────────────────────────────
+
+const ID_CHECKSUM_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
+
+// Common key prefixes → friendly label (nice-to-have; the real object name comes
+// from the detail fetch). Not exhaustive — unknown prefixes still open fine.
+const COMMON_PREFIXES: Record<string, string> = {
+  '001': 'Account', '003': 'Contact', '005': 'User', '006': 'Opportunity',
+  '00Q': 'Lead', '500': 'Case', '701': 'Campaign', '800': 'Contract',
+  '0WO': 'Order', '00T': 'Task', '00U': 'Event', '02s': 'Email Message',
+};
+
+// Recomputes the 3-char checksum suffix from the 15-char base of a record Id.
+function computeIdChecksum(id15: string): string {
+  let suffix = '';
+  for (let block = 0; block < 3; block++) {
+    let flags = 0;
+    for (let i = 0; i < 5; i++) {
+      const c = id15.charAt(block * 5 + i);
+      if (c >= 'A' && c <= 'Z') flags += 1 << i;
+    }
+    suffix += ID_CHECKSUM_ALPHABET.charAt(flags);
+  }
+  return suffix;
+}
+
+// 15-char Ids are accepted on format; 18-char Ids are verified via their checksum.
+function isValidSalesforceId(value: string): boolean {
+  if (!value) return false;
+  if (value.length === 15) return /^[a-zA-Z0-9]{15}$/.test(value);
+  if (value.length === 18) {
+    if (!/^[a-zA-Z0-9]{18}$/.test(value)) return false;
+    return computeIdChecksum(value.substring(0, 15)) === value.substring(15).toUpperCase();
+  }
+  return false;
+}
+
+// Pulls a record Id out of the current page URL (Lightning, classic, or params).
+function extractRecordIdFromUrl(): string | null {
+  const href = window.location.href;
+  const m = href.match(/\/lightning\/r\/(?:[^/]+\/)?([a-zA-Z0-9]{15,18})(?:\/|$|\?)/);
+  if (m && isValidSalesforceId(m[1])) return m[1];
+  try {
+    const params = new URL(href).searchParams;
+    for (const key of ['id', 'recordId']) {
+      const v = params.get(key);
+      if (v && isValidSalesforceId(v)) return v;
+    }
+  } catch { /* ignore */ }
+  for (const seg of window.location.pathname.split('/').filter(Boolean)) {
+    if (isValidSalesforceId(seg)) return seg;
+  }
+  return null;
+}
+
+function flashToast(message: string): void {
+  const isDark = currentSpotlightTheme === 'dark';
+  const el = document.createElement('div');
+  el.textContent = message;
+  Object.assign(el.style, {
+    position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+    background: isDark ? 'rgba(15,23,42,0.95)' : 'rgba(31,41,55,0.95)', color: '#fff',
+    padding: '10px 18px', borderRadius: '10px', fontSize: '13px', fontWeight: '600',
+    fontFamily: 'Inter, system-ui, sans-serif', zIndex: '2147483648',
+    boxShadow: '0 10px 30px rgba(0,0,0,0.35)', opacity: '0', transition: 'opacity 0.2s',
+    pointerEvents: 'none',
+  });
+  document.body.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); }, 2200);
+}
+
+function formatFieldValue(value: any): string {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+// Wide modal showing every accessible field (label · API name · type · value).
+function showRecordDetail(recordId: string): void {
+  const existing = document.getElementById('sf-log-analyzer-spotlight-container');
+  if (existing) existing.remove();
+  if (!document.body) return;
+
+  const isDark = currentSpotlightTheme === 'dark';
+  const C = {
+    backdrop: isDark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.2)',
+    modalBg: isDark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.92)',
+    border: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.12)',
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    headerBg: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)',
+    rowHover: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+    surface: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
+    inputBg: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+    accent: '#2563eb',
+  };
+
+  const container = document.createElement('div');
+  container.id = 'sf-log-analyzer-spotlight-container';
+  Object.assign(container.style, {
+    position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+    zIndex: '2147483648', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    pointerEvents: 'none',
+  });
+  document.body.appendChild(container);
+
+  const close = () => {
+    document.removeEventListener('keydown', onKey, true);
+    container.remove();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+  };
+  document.addEventListener('keydown', onKey, true);
+
+  const backdrop = document.createElement('div');
+  Object.assign(backdrop.style, {
+    position: 'absolute', top: '0', left: '0', width: '100%', height: '100%',
+    background: C.backdrop, pointerEvents: 'auto', cursor: 'pointer',
+  });
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  container.appendChild(backdrop);
+
+  const modal = document.createElement('div');
+  Object.assign(modal.style, {
+    position: 'relative', width: '92%', maxWidth: '1080px', maxHeight: '85vh',
+    display: 'flex', flexDirection: 'column', background: C.modalBg,
+    backdropFilter: 'blur(25px)', WebkitBackdropFilter: 'blur(25px)', borderRadius: '20px',
+    border: `1px solid ${C.border}`, boxShadow: '0 25px 60px rgba(0,0,0,0.45)',
+    overflow: 'hidden', pointerEvents: 'auto', zIndex: '2',
+    fontFamily: 'Inter, system-ui, sans-serif',
+  });
+  container.appendChild(modal);
+
+  // Header
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    display: 'flex', alignItems: 'center', gap: '14px', padding: '18px 24px',
+    borderBottom: `1px solid ${C.divider}`, background: C.headerBg, flexShrink: '0',
+  });
+
+  const titleWrap = document.createElement('div');
+  titleWrap.style.flex = '1';
+  titleWrap.style.minWidth = '0';
+  const title = document.createElement('div');
+  title.textContent = 'Loading record…';
+  Object.assign(title.style, { fontSize: '18px', fontWeight: '700', color: C.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+  const subtitle = document.createElement('div');
+  subtitle.textContent = recordId;
+  Object.assign(subtitle.style, { fontSize: '12px', color: C.textMuted, marginTop: '2px', fontFamily: 'Fira Code, monospace' });
+  titleWrap.appendChild(title);
+  titleWrap.appendChild(subtitle);
+
+  // The user is already on (or came from) the record, so offer the object
+  // instead — opens the object's page in Setup's Object Manager. Wired once the
+  // object type is known from the fetch.
+  const objectBtn = document.createElement('button');
+  objectBtn.textContent = 'Open object ↗';
+  Object.assign(objectBtn.style, {
+    fontSize: '12px', fontWeight: '700', padding: '8px 14px', borderRadius: '8px',
+    border: 'none', cursor: 'pointer', background: C.accent, color: '#fff',
+    fontFamily: 'inherit', flexShrink: '0', whiteSpace: 'nowrap', display: 'none',
+  });
+
+  const closeBtn = document.createElement('button');
+  Object.assign(closeBtn.style, { padding: '8px', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '8px', flexShrink: '0', display: 'flex' });
+  closeBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${C.textMuted}" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+  closeBtn.addEventListener('click', close);
+
+  header.appendChild(titleWrap);
+  header.appendChild(objectBtn);
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  // Toolbar (filter + hide-empty) — added once data loads
+  const toolbar = document.createElement('div');
+  Object.assign(toolbar.style, { display: 'none', alignItems: 'center', gap: '12px', padding: '12px 24px', borderBottom: `1px solid ${C.divider}`, flexShrink: '0' });
+
+  const filterInput = document.createElement('input');
+  filterInput.type = 'text';
+  filterInput.placeholder = 'Filter fields by label, API name or value…';
+  Object.assign(filterInput.style, {
+    flex: '1', minWidth: '0', padding: '8px 12px', fontSize: '13px', borderRadius: '8px',
+    border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary,
+    outline: 'none', fontFamily: 'inherit',
+  });
+
+  const emptyToggleWrap = document.createElement('label');
+  Object.assign(emptyToggleWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: C.textMuted, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: '600' });
+  const emptyToggle = document.createElement('input');
+  emptyToggle.type = 'checkbox';
+  emptyToggle.style.cursor = 'pointer';
+  emptyToggleWrap.appendChild(emptyToggle);
+  emptyToggleWrap.appendChild(document.createTextNode('Hide empty'));
+
+  const countLabel = document.createElement('span');
+  Object.assign(countLabel.style, { fontSize: '12px', color: C.textFaint, whiteSpace: 'nowrap' });
+
+  toolbar.appendChild(filterInput);
+  toolbar.appendChild(emptyToggleWrap);
+  toolbar.appendChild(countLabel);
+  modal.appendChild(toolbar);
+
+  // Body
+  const body = document.createElement('div');
+  Object.assign(body.style, { flex: '1', minHeight: '0', overflow: 'auto' });
+  modal.appendChild(body);
+
+  const renderMessage = (msg: string) => {
+    body.innerHTML = '';
+    const d = document.createElement('div');
+    Object.assign(d.style, { padding: '60px 24px', textAlign: 'center', color: C.textMuted, fontSize: '14px', fontWeight: '600' });
+    d.textContent = msg;
+    body.appendChild(d);
+  };
+
+  renderMessage('Loading record…');
+
+  // Show
+  container.style.pointerEvents = 'auto';
+
+  getSfCredentials().then((creds: any) => {
+    if (!creds?.instanceUrl || !creds?.sessionId) {
+      renderMessage('Salesforce session not detected. Open this on a logged-in Salesforce tab.');
+      return;
+    }
+    const chromeRuntime = (globalThis as any).chrome?.runtime;
+    if (!chromeRuntime) { renderMessage('Extension runtime unavailable.'); return; }
+
+    chromeRuntime.sendMessage(
+      { type: 'GET_RECORD_DETAIL', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, recordId },
+      (resp: any) => {
+        if (!resp?.success) {
+          renderMessage(resp?.error || 'Failed to load this record.');
+          return;
+        }
+        const data = resp.data;
+        title.textContent = String(data.recordName || data.objectLabel || 'Record');
+        subtitle.textContent = `${data.objectLabel} · ${recordId}`;
+
+        objectBtn.title = `Open ${data.objectLabel} in Object Manager`;
+        objectBtn.addEventListener('click', () => {
+          window.open(`${lightningOrigin()}/lightning/setup/ObjectManager/${data.objectApiName}/Details/view`, '_blank');
+        });
+        objectBtn.style.display = 'inline-block';
+        recordRecent({ kind: 'record', icon: '🗂️', title: String(data.recordName || data.objectLabel), subtitle: `${data.objectLabel}`, meta: 'Record', url: `${lightningOrigin()}/${recordId}` });
+
+        const fields: any[] = data.fields || [];
+        const objectApiName: string = data.objectApiName;
+        toolbar.style.display = 'flex';
+
+        // Builds the value cell with copy + inline edit (Save appears on change).
+        const buildValueCell = (f: any) => {
+          const td = document.createElement('td');
+          Object.assign(td.style, { padding: '10px 16px', verticalAlign: 'top', wordBreak: 'break-word' });
+          let currentValue = f.value;
+
+          const iconBtn = (svg: string, tip: string, onClick: () => void) => {
+            const b = document.createElement('button');
+            b.title = tip;
+            Object.assign(b.style, { padding: '4px', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '5px', display: 'flex', color: C.textMuted });
+            b.innerHTML = svg;
+            b.addEventListener('mouseover', () => { b.style.background = C.surface; });
+            b.addEventListener('mouseout', () => { b.style.background = 'transparent'; });
+            b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+            return b;
+          };
+
+          const copySvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+          const checkSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+          const editSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>`;
+
+          const renderView = () => {
+            td.innerHTML = '';
+
+            // No FLS read access — show a lock and no value, no copy/edit.
+            if (!f.accessible) {
+              const noacc = document.createElement('div');
+              Object.assign(noacc.style, { display: 'flex', alignItems: 'center', gap: '6px', color: C.textFaint });
+              const lock = document.createElement('span');
+              lock.style.display = 'flex';
+              lock.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
+              const txt = document.createElement('span');
+              txt.textContent = 'No access';
+              Object.assign(txt.style, { fontSize: '12px', fontStyle: 'italic' });
+              noacc.appendChild(lock);
+              noacc.appendChild(txt);
+              td.appendChild(noacc);
+              return;
+            }
+
+            const row = document.createElement('div');
+            Object.assign(row.style, { display: 'flex', alignItems: 'flex-start', gap: '8px' });
+
+            const valWrap = document.createElement('div');
+            valWrap.style.flex = '1';
+            valWrap.style.minWidth = '0';
+            const display = formatFieldValue(currentValue);
+            if (display === '') {
+              const dash = document.createElement('span'); dash.textContent = '—'; dash.style.color = C.textFaint; valWrap.appendChild(dash);
+            } else if (f.isReference && typeof currentValue === 'string' && isValidSalesforceId(currentValue)) {
+              const link = document.createElement('a');
+              link.textContent = display; link.href = `${lightningOrigin()}/${currentValue}`; link.target = '_blank'; link.rel = 'noopener noreferrer';
+              Object.assign(link.style, { color: C.accent, textDecoration: 'none', fontWeight: '600' });
+              valWrap.appendChild(link);
+            } else {
+              const span = document.createElement('span'); span.textContent = display; span.style.color = C.textPrimary; valWrap.appendChild(span);
+            }
+
+            const actions = document.createElement('div');
+            Object.assign(actions.style, { display: 'flex', gap: '2px', flexShrink: '0' });
+
+            const copyBtn = iconBtn(copySvg, 'Copy value', () => {
+              const txt = formatFieldValue(currentValue);
+              navigator.clipboard?.writeText(txt).then(() => {
+                copyBtn.innerHTML = checkSvg;
+                setTimeout(() => { copyBtn.innerHTML = copySvg; }, 1200);
+              }).catch(() => {});
+            });
+            actions.appendChild(copyBtn);
+            if (f.updateable) actions.appendChild(iconBtn(editSvg, 'Edit field', renderEdit));
+
+            row.appendChild(valWrap);
+            row.appendChild(actions);
+            td.appendChild(row);
+          };
+
+          const renderEdit = () => {
+            td.innerHTML = '';
+            const wrap = document.createElement('div');
+            Object.assign(wrap.style, { display: 'flex', flexDirection: 'column', gap: '6px' });
+
+            const original = currentValue;
+            const isBool = f.type === 'boolean';
+            const isPicklist = f.type === 'picklist' && Array.isArray(f.picklistValues) && f.picklistValues.length > 0;
+            let input: HTMLInputElement | HTMLSelectElement;
+
+            if (isBool) {
+              const sel = document.createElement('select');
+              ['true', 'false'].forEach((v) => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+              sel.value = original ? 'true' : 'false';
+              input = sel;
+            } else if (isPicklist) {
+              const sel = document.createElement('select');
+              const blank = document.createElement('option'); blank.value = ''; blank.textContent = '--None--'; sel.appendChild(blank);
+              f.picklistValues.forEach((p: any) => { const o = document.createElement('option'); o.value = p.value; o.textContent = p.label || p.value; sel.appendChild(o); });
+              sel.value = (original ?? '') as string;
+              input = sel;
+            } else {
+              const inp = document.createElement('input');
+              inp.type = 'text';
+              inp.value = original === null || original === undefined ? '' : (typeof original === 'object' ? JSON.stringify(original) : String(original));
+              input = inp;
+            }
+            Object.assign((input as HTMLElement).style, { width: '100%', padding: '6px 10px', fontSize: '13px', borderRadius: '6px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none', fontFamily: 'inherit' });
+
+            const originalString = isBool
+              ? (original ? 'true' : 'false')
+              : (original === null || original === undefined ? '' : (typeof original === 'object' ? JSON.stringify(original) : String(original)));
+
+            const btnRow = document.createElement('div');
+            Object.assign(btnRow.style, { display: 'flex', gap: '6px', alignItems: 'center' });
+
+            const saveBtn = document.createElement('button');
+            saveBtn.textContent = 'Save';
+            Object.assign(saveBtn.style, { display: 'none', fontSize: '12px', fontWeight: '700', padding: '5px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: C.accent, color: '#fff', fontFamily: 'inherit' });
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            Object.assign(cancelBtn.style, { fontSize: '12px', fontWeight: '600', padding: '5px 12px', borderRadius: '6px', border: `1px solid ${C.border}`, cursor: 'pointer', background: 'transparent', color: C.textMuted, fontFamily: 'inherit' });
+
+            const errEl = document.createElement('div');
+            Object.assign(errEl.style, { display: 'none', fontSize: '12px', color: '#ef4444', fontWeight: '600', lineHeight: '1.4' });
+
+            const checkChanged = () => { saveBtn.style.display = ((input as any).value !== originalString) ? 'inline-block' : 'none'; };
+            input.addEventListener('input', checkChanged);
+            input.addEventListener('change', checkChanged);
+            cancelBtn.addEventListener('click', (e) => { e.stopPropagation(); renderView(); });
+
+            const coerce = (raw: string): any => {
+              if (raw === '') return null;
+              if (isBool) return raw === 'true';
+              if (['double', 'currency', 'percent', 'int', 'long'].includes(f.type)) { const n = Number(raw); return isNaN(n) ? raw : n; }
+              return raw;
+            };
+
+            saveBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              errEl.style.display = 'none';
+              const newVal = coerce((input as any).value);
+              saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+              const chromeRuntime = (globalThis as any).chrome?.runtime;
+              chromeRuntime.sendMessage(
+                { type: 'UPDATE_RECORD_FIELD', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, objectApiName, recordId, fieldApiName: f.apiName, value: newVal },
+                (resp: any) => {
+                  saveBtn.disabled = false; saveBtn.textContent = 'Save';
+                  if (resp?.success) { currentValue = newVal; flashToast('Field updated'); renderView(); }
+                  else { errEl.textContent = resp?.error || 'Save failed'; errEl.style.display = 'block'; }
+                }
+              );
+            });
+
+            btnRow.appendChild(saveBtn);
+            btnRow.appendChild(cancelBtn);
+            wrap.appendChild(input);
+            wrap.appendChild(btnRow);
+            wrap.appendChild(errEl);
+            td.appendChild(wrap);
+            (input as HTMLElement).focus();
+          };
+
+          renderView();
+          return td;
+        };
+
+        const draw = () => {
+          const q = filterInput.value.trim().toLowerCase();
+          const hideEmpty = emptyToggle.checked;
+          const rows = fields.filter((f) => {
+            const display = formatFieldValue(f.value);
+            if (hideEmpty && display === '') return false;
+            if (!q) return true;
+            return (
+              (f.label || '').toLowerCase().includes(q) ||
+              (f.apiName || '').toLowerCase().includes(q) ||
+              display.toLowerCase().includes(q)
+            );
+          });
+
+          countLabel.textContent = `${rows.length} of ${fields.length} fields`;
+          body.innerHTML = '';
+
+          if (rows.length === 0) { renderMessageInline('No fields match your filter.'); return; }
+
+          const table = document.createElement('table');
+          Object.assign(table.style, { width: '100%', borderCollapse: 'collapse', fontSize: '13px' });
+
+          const thead = document.createElement('thead');
+          const htr = document.createElement('tr');
+          ['Field', 'Type', 'Value'].forEach((h, i) => {
+            const th = document.createElement('th');
+            th.textContent = h;
+            Object.assign(th.style, {
+              position: 'sticky', top: '0', textAlign: 'left', padding: '10px 16px',
+              background: C.headerBg, color: C.textFaint, fontSize: '10px',
+              fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em',
+              borderBottom: `1px solid ${C.divider}`, backdropFilter: 'blur(8px)',
+              width: i === 1 ? '140px' : 'auto',
+            });
+            htr.appendChild(th);
+          });
+          thead.appendChild(htr);
+          table.appendChild(thead);
+
+          const tbody = document.createElement('tbody');
+          rows.forEach((f) => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = `1px solid ${C.divider}`;
+            // No-access rows are dimmed so the access level reads at a glance.
+            if (!f.accessible) tr.style.opacity = '0.6';
+            tr.addEventListener('mouseover', () => { tr.style.background = C.rowHover; });
+            tr.addEventListener('mouseout', () => { tr.style.background = 'transparent'; });
+
+            const tdField = document.createElement('td');
+            Object.assign(tdField.style, { padding: '10px 16px', verticalAlign: 'top' });
+            const fl = document.createElement('div');
+            fl.textContent = f.label || f.apiName;
+            Object.assign(fl.style, { fontWeight: '600', color: f.accessible ? C.textPrimary : C.textMuted });
+            const fa = document.createElement('div');
+            fa.textContent = f.apiName;
+            Object.assign(fa.style, { fontSize: '11px', color: C.textFaint, fontFamily: 'Fira Code, monospace', marginTop: '2px' });
+            tdField.appendChild(fl);
+            tdField.appendChild(fa);
+
+            const tdType = document.createElement('td');
+            Object.assign(tdType.style, { padding: '10px 16px', verticalAlign: 'top' });
+            const typeChip = document.createElement('span');
+            typeChip.textContent = f.type || 'string';
+            Object.assign(typeChip.style, { fontSize: '11px', fontWeight: '600', color: C.textMuted, background: C.surface, padding: '2px 8px', borderRadius: '6px', whiteSpace: 'nowrap' });
+            tdType.appendChild(typeChip);
+
+            const tdVal = buildValueCell(f);
+
+            tr.appendChild(tdField);
+            tr.appendChild(tdType);
+            tr.appendChild(tdVal);
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          body.appendChild(table);
+        };
+
+        const renderMessageInline = (msg: string) => {
+          const d = document.createElement('div');
+          Object.assign(d.style, { padding: '40px 24px', textAlign: 'center', color: C.textMuted, fontSize: '13px' });
+          d.textContent = msg;
+          body.appendChild(d);
+        };
+
+        filterInput.addEventListener('input', draw);
+        emptyToggle.addEventListener('change', draw);
+        draw();
+        filterInput.focus();
+      }
+    );
+  });
+}
+
+// ─── "What's New" update card ────────────────────────────────────────────────
+
+const WHATS_NEW_VERSION_KEY = 'sf_log_analyzer_last_seen_version';
+
+const WHATS_NEW: { icon: string; title: string; desc: string }[] = [
+  { icon: '🔗', title: 'Open records by Id', desc: 'Paste a 15/18-char record Id into Spotlight to open the record or view all its fields.' },
+  { icon: '🗂️', title: 'Record field viewer', desc: 'Press Alt+D (Option+D on Mac) on any record to see every field, value and type you can access.' },
+  { icon: '✏️', title: 'Inline edit & save', desc: 'Edit field values right in the viewer and save back to Salesforce — with clear errors if a save is rejected.' },
+  { icon: '🌓', title: 'Dark mode for Spotlight', desc: 'Switch the Spotlight theme between light and dark in Settings.' },
+  { icon: '🐞', title: 'Report an issue', desc: 'Send feedback straight from the Spotlight footer and the log panel.' },
+];
+
+function showWhatsNew(version: string): void {
+  const existing = document.getElementById('sf-log-analyzer-whatsnew');
+  if (existing) existing.remove();
+  if (!document.body) return;
+
+  // Persist immediately so the card only appears once across page loads.
+  try { (globalThis as any).chrome?.storage?.local?.set({ [WHATS_NEW_VERSION_KEY]: version }); } catch { /* ignore */ }
+
+  const isDark = currentSpotlightTheme === 'dark';
+  const C = {
+    backdrop: isDark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.3)',
+    modalBg: isDark ? 'rgba(15,23,42,0.96)' : 'rgba(255,255,255,0.98)',
+    border: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.12)',
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.75)' : 'rgba(31,41,55,0.65)',
+    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
+    accent: '#2563eb',
+    chip: isDark ? 'rgba(37,99,235,0.2)' : 'rgba(37,99,235,0.1)',
+  };
+
+  const container = document.createElement('div');
+  container.id = 'sf-log-analyzer-whatsnew';
+  Object.assign(container.style, {
+    position: 'fixed', top: '0', left: '0', width: '100%', height: '100%', zIndex: '2147483648',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+    fontFamily: 'Inter, system-ui, sans-serif',
+  });
+  document.body.appendChild(container);
+
+  const close = () => { document.removeEventListener('keydown', onKey, true); container.remove(); };
+  const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+
+  const backdrop = document.createElement('div');
+  Object.assign(backdrop.style, { position: 'absolute', top: '0', left: '0', width: '100%', height: '100%', background: C.backdrop, pointerEvents: 'auto', cursor: 'pointer' });
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  container.appendChild(backdrop);
+
+  const modal = document.createElement('div');
+  Object.assign(modal.style, {
+    position: 'relative', width: '92%', maxWidth: '520px', maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+    background: C.modalBg, backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: '18px',
+    border: `1px solid ${C.border}`, boxShadow: '0 25px 60px rgba(0,0,0,0.45)', overflow: 'hidden', pointerEvents: 'auto', zIndex: '2',
+  });
+  container.appendChild(modal);
+
+  const header = document.createElement('div');
+  Object.assign(header.style, { display: 'flex', alignItems: 'center', gap: '12px', padding: '20px 24px 14px' });
+  const hTitle = document.createElement('div');
+  hTitle.textContent = "What's new";
+  Object.assign(hTitle.style, { fontSize: '20px', fontWeight: '800', color: C.textPrimary, flex: '1' });
+  const vChip = document.createElement('span');
+  vChip.textContent = `v${version}`;
+  Object.assign(vChip.style, { fontSize: '12px', fontWeight: '700', color: C.accent, background: C.chip, padding: '3px 10px', borderRadius: '999px' });
+  header.appendChild(hTitle);
+  header.appendChild(vChip);
+  modal.appendChild(header);
+
+  const list = document.createElement('div');
+  Object.assign(list.style, { padding: '0 24px', overflow: 'auto', flex: '1' });
+  WHATS_NEW.forEach((item) => {
+    const r = document.createElement('div');
+    Object.assign(r.style, { display: 'flex', gap: '14px', padding: '12px 0', borderTop: `1px solid ${C.divider}` });
+    const ic = document.createElement('div');
+    ic.textContent = item.icon; Object.assign(ic.style, { fontSize: '22px', flexShrink: '0', lineHeight: '1.2' });
+    const tx = document.createElement('div');
+    const t = document.createElement('div');
+    t.textContent = item.title; Object.assign(t.style, { fontSize: '15px', fontWeight: '700', color: C.textPrimary });
+    const d = document.createElement('div');
+    d.textContent = item.desc; Object.assign(d.style, { fontSize: '13px', color: C.textMuted, marginTop: '2px', lineHeight: '1.5' });
+    tx.appendChild(t); tx.appendChild(d);
+    r.appendChild(ic); r.appendChild(tx);
+    list.appendChild(r);
+  });
+  modal.appendChild(list);
+
+  const footer = document.createElement('div');
+  Object.assign(footer.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '16px 24px', borderTop: `1px solid ${C.divider}` });
+  const docsLink = document.createElement('a');
+  docsLink.textContent = 'View docs ↗';
+  docsLink.href = 'https://praveen420coder.github.io/sf-log-analyzer/';
+  docsLink.target = '_blank'; docsLink.rel = 'noopener noreferrer';
+  Object.assign(docsLink.style, { fontSize: '13px', fontWeight: '600', color: C.textMuted, textDecoration: 'none' });
+  const gotIt = document.createElement('button');
+  gotIt.textContent = 'Got it';
+  Object.assign(gotIt.style, { fontSize: '13px', fontWeight: '700', padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer', background: C.accent, color: '#fff', fontFamily: 'inherit' });
+  gotIt.addEventListener('click', close);
+  footer.appendChild(docsLink);
+  footer.appendChild(gotIt);
+  modal.appendChild(footer);
+
+  container.style.pointerEvents = 'auto';
+}
+
 // ─── Spotlight Search ────────────────────────────────────────────────────────
 // Defined BEFORE injectSidebar so it is always in scope when called.
 
@@ -824,9 +1443,88 @@ function buildSpotlight(tabConfig: TabConfig) {
   };
 
   // ─── Search / render ───────────────────────────────────────
+  // Feature hint rows shown on the Setup tab when the search box is empty.
+  const makeTipRow = (t: { icon: string; title: string; desc: string; onClick?: () => void }) => {
+    const el = document.createElement(t.onClick ? 'button' : 'div');
+    Object.assign(el.style, {
+      width: '100%', display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '10px 12px',
+      borderRadius: '10px', background: 'transparent', border: 'none', textAlign: 'left',
+      cursor: t.onClick ? 'pointer' : 'default', fontFamily: 'inherit',
+    });
+    if (t.onClick) {
+      el.addEventListener('click', t.onClick);
+      el.addEventListener('mouseover', () => { el.style.background = T.surface; });
+      el.addEventListener('mouseout', () => { el.style.background = 'transparent'; });
+    }
+    const ic = document.createElement('div');
+    ic.textContent = t.icon; ic.style.fontSize = '18px'; ic.style.flexShrink = '0';
+    const txt = document.createElement('div');
+    const ti = document.createElement('div');
+    ti.textContent = t.title; Object.assign(ti.style, { fontSize: '14px', fontWeight: '700', color: T.textPrimary });
+    const de = document.createElement('div');
+    de.textContent = t.desc; Object.assign(de.style, { fontSize: '12px', color: T.textMuted, marginTop: '2px' });
+    txt.appendChild(ti); txt.appendChild(de);
+    el.appendChild(ic); el.appendChild(txt);
+    return el;
+  };
+
+  const renderSpotlightTips = () => {
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
+    const wrap = document.createElement('div');
+    wrap.style.padding = '8px 20px 20px';
+    const heading = document.createElement('div');
+    heading.textContent = 'Tips';
+    Object.assign(heading.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em', color: T.textFaint, padding: '4px 12px 8px' });
+    wrap.appendChild(heading);
+    const tips = [
+      { icon: '🔗', title: 'Paste a record Id', desc: 'Open the record or view all its fields instantly.' },
+      { icon: '🗂️', title: `Press ${isMac ? 'Option' : 'Alt'}+D on a record`, desc: 'See every field, its value and type — and edit inline.' },
+      { icon: '🌓', title: 'Light or dark', desc: 'Switch the Spotlight theme in Settings.', onClick: () => activateTab('__settings') },
+      { icon: '⚡', title: 'Search everything', desc: 'Setup, Objects, Users, Flows, Permissions, Apps and more.' },
+    ];
+    tips.forEach((t) => wrap.appendChild(makeTipRow(t)));
+    resultsContainer.appendChild(wrap);
+  };
+
   const performSearch = async () => {
     const query = (searchInput as HTMLInputElement).value.toLowerCase();
     resultsContainer.innerHTML = '';
+
+    // Record-Id paste detection — works on any tab. If the input is a valid
+    // 15/18-char record Id, surface quick actions instead of a normal search.
+    const rawQuery = (searchInput as HTMLInputElement).value.trim();
+    if (isValidSalesforceId(rawQuery)) {
+      const prefix = rawQuery.substring(0, 3);
+      const guessed = COMMON_PREFIXES[prefix];
+      const subtitle = guessed ? `${guessed} · ${rawQuery}` : rawQuery;
+
+      resultsContainer.appendChild(makeResultRow({
+        icon: '🔗', title: 'Open record', subtitle, meta: 'Record', first: true,
+        onClick: () => {
+          const url = `${lightningOrigin()}/${rawQuery}`;
+          recordRecent({ kind: 'record', icon: '🔗', title: guessed ? `${guessed} record` : 'Record', subtitle: rawQuery, meta: 'Record', url });
+          window.open(url, '_blank');
+          hideSpotlightSearch();
+        },
+      }));
+
+      resultsContainer.appendChild(makeResultRow({
+        icon: '🗂️', title: 'View all fields', subtitle: 'Every field, value and type you can access',
+        meta: 'Detail', onClick: () => showRecordDetail(rawQuery),
+      }));
+
+      if (prefix === '005') {
+        resultsContainer.appendChild(makeResultRow({
+          icon: '⚙️', title: 'Open in Setup', subtitle: 'User detail in Setup', meta: 'Setup',
+          onClick: () => {
+            const url = `${lightningOrigin()}/lightning/setup/ManageUsers/page?address=%2F${rawQuery}%3Fnoredirect%3D1`;
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        }));
+      }
+      return;
+    }
 
     if (activeTab === 'recent') {
       let list = recentItems;
@@ -886,7 +1584,7 @@ function buildSpotlight(tabConfig: TabConfig) {
 
     } else if (activeTab === 'setup') {
       if (query.length === 0) {
-        resultsContainer.appendChild(noResults.cloneNode(true));
+        renderSpotlightTips();
         return;
       }
 
@@ -1666,10 +2364,26 @@ function injectSidebar() {
 
     applySettingsToIframe(iframe, backdrop, settings, false);
 
+    // One-time "What's New" card — shown when the user opens the extension
+    // (not on page load), once per version update.
+    const maybeShowWhatsNew = () => {
+      try {
+        const manifestVersion = chromeRuntime.getManifest?.().version || '';
+        const storage = (globalThis as any).chrome?.storage?.local;
+        if (!manifestVersion || !storage) return;
+        storage.get([WHATS_NEW_VERSION_KEY], (res: any) => {
+          if (res?.[WHATS_NEW_VERSION_KEY] !== manifestVersion) {
+            setTimeout(() => showWhatsNew(manifestVersion), 600);
+          }
+        });
+      } catch { /* ignore */ }
+    };
+
     const openPanel = () => {
       isPanelOpen = true;
       iframe.contentWindow?.postMessage({ type: 'OPEN_PANEL' }, '*');
       applySettingsToIframe(iframe, backdrop, settings, true);
+      maybeShowWhatsNew();
     };
 
     const closePanel = () => {
@@ -1679,6 +2393,15 @@ function injectSidebar() {
     };
 
     backdrop.addEventListener('click', () => closePanel());
+
+    // Clicking the toolbar icon (handled in background) opens the panel.
+    if (chromeRuntime.onMessage) {
+      chromeRuntime.onMessage.addListener((msg: any) => {
+        if (msg?.type === 'SF_TOOLBAR_OPEN' && window.top === window) {
+          openPanel();
+        }
+      });
+    }
 
     // ✅ FIX: Listen for postMessage from iframe (handles Mac where iframe keeps focus)
     window.addEventListener('message', (event) => {
@@ -1713,6 +2436,20 @@ function injectSidebar() {
         event.preventDefault();
         event.stopPropagation();
         openPanel();
+        return false;
+      }
+
+      // Alt+D / Option+D to open the Record Detail viewer for the current record.
+      // Guard against Ctrl+Alt+D (which opens the panel). event.code avoids Mac char remap.
+      if (event.altKey && !event.ctrlKey && event.code === 'KeyD') {
+        event.preventDefault();
+        event.stopPropagation();
+        const id = extractRecordIdFromUrl();
+        if (id) {
+          showRecordDetail(id);
+        } else {
+          flashToast('No record detected on this page');
+        }
         return false;
       }
 

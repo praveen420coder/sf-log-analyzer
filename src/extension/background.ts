@@ -25,6 +25,18 @@ const startKeepAlive = () => {
 
 startKeepAlive();
 
+// Clicking the toolbar icon opens the analyzer panel on the active tab.
+if (chromeAPI?.action?.onClicked) {
+  chromeAPI.action.onClicked.addListener((tab: any) => {
+    if (tab?.id) {
+      chromeAPI.tabs.sendMessage(tab.id, { type: 'SF_TOOLBAR_OPEN' }, () => {
+        // Swallow "no receiving end" errors on non-Salesforce tabs.
+        void chromeAPI.runtime?.lastError;
+      });
+    }
+  });
+}
+
 // Helper: Clean and transform Salesforce domain for API calls
 const cleanDomain = (domain: string): string => {
   const cleaned = domain.startsWith('.') ? domain.substring(1) : domain;
@@ -711,6 +723,136 @@ if (chromeRuntime) {
           }))
           .then(data => sendResponse({ success: true, data: (data.records || []).filter(isObjectManagerObject) }))
           .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_RECORD_DETAIL') {
+        // Returns every field the current user can access for a record, with
+        // label, type and value. FLS/sharing are enforced by Salesforce: the
+        // sObject row resource only returns readable fields.
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const recordId: string = request.recordId;
+
+        const resolveType = async (): Promise<string | null> => {
+          if (request.objectApiName) return request.objectApiName;
+          const prefix = (recordId || '').substring(0, 3);
+          const q = `SELECT QualifiedApiName FROM EntityDefinition WHERE KeyPrefix = '${prefix}' LIMIT 1`;
+          try {
+            const res = await fetch(`${request.instanceUrl}/services/data/${V}/query?q=${encodeURIComponent(q)}`, { headers });
+            if (!res.ok) return null;
+            const d = await res.json();
+            return d.records?.[0]?.QualifiedApiName || null;
+          } catch {
+            return null;
+          }
+        };
+
+        (async () => {
+          try {
+            const objectApiName = await resolveType();
+            if (!objectApiName) {
+              sendResponse({ success: false, error: 'Could not determine the object type for this Id.' });
+              return;
+            }
+
+            const [descRes, recRes] = await Promise.all([
+              fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${objectApiName}/describe`, { headers }),
+              fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${objectApiName}/${recordId}`, { headers }),
+            ]);
+
+            if (recRes.status === 404) {
+              sendResponse({ success: false, error: 'Record not found, or you do not have access to it.' });
+              return;
+            }
+            if (!recRes.ok) {
+              const t = await recRes.text();
+              sendResponse({ success: false, error: `HTTP ${recRes.status}: ${t.substring(0, 140) || 'Unknown error'}` });
+              return;
+            }
+
+            const record = await recRes.json();
+            const describe = descRes.ok ? await descRes.json() : { fields: [], label: objectApiName };
+
+            // A field present as a key in the row response is readable by the user
+            // (FLS read). Fields defined on the object but absent ⇒ no read access.
+            const isReadable = (name: string) => Object.prototype.hasOwnProperty.call(record, name);
+
+            const describeFields: any[] = describe.fields || [];
+            const nameField = describeFields.find((f: any) => f.nameField)?.name || 'Name';
+
+            const fromDescribe = describeFields.map((f: any) => {
+              const accessible = isReadable(f.name);
+              return {
+                apiName: f.name,
+                label: f.label || f.name,
+                type: f.type || 'string',
+                value: accessible ? record[f.name] : null,
+                accessible,
+                isReference: f.type === 'reference',
+                referenceTo: f.referenceTo || [],
+                updateable: f.updateable === true,
+                picklistValues: (f.picklistValues || []).filter((p: any) => p.active !== false).map((p: any) => ({ label: p.label, value: p.value })),
+              };
+            });
+
+            // Fallback if describe was unavailable: show the readable fields only.
+            const fromRecord = Object.keys(record)
+              .filter((k) => k !== 'attributes')
+              .map((k) => ({
+                apiName: k, label: k, type: 'string', value: record[k], accessible: true,
+                isReference: false, referenceTo: [], updateable: false, picklistValues: [],
+              }));
+
+            const fields = (fromDescribe.length ? fromDescribe : fromRecord)
+              .sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+
+            const recordName = record[nameField] || record['Name'] || recordId;
+
+            sendResponse({
+              success: true,
+              data: { objectApiName, objectLabel: describe.label || objectApiName, recordId, recordName, fields },
+            });
+          } catch (err: any) {
+            sendResponse({ success: false, error: err?.message || 'Failed to load record detail.' });
+          }
+        })();
+
+        return true;
+      }
+
+      if (request.type === 'UPDATE_RECORD_FIELD') {
+        // PATCH a single field on a record. Salesforce enforces FLS/validation;
+        // any failure (no edit access, validation rule, required field) returns
+        // a descriptive message that we surface to the user.
+        const V = 'v60.0';
+        const headers = {
+          'Authorization': `Bearer ${request.sessionId}`,
+          'Content-Type': 'application/json',
+        };
+        const body = JSON.stringify({ [request.fieldApiName]: request.value });
+
+        fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${request.objectApiName}/${request.recordId}`, {
+          method: 'PATCH',
+          headers,
+          body,
+        })
+          .then(async (res) => {
+            if (res.status === 204) {
+              sendResponse({ success: true });
+              return;
+            }
+            const text = await res.text();
+            let msg = `HTTP ${res.status}`;
+            try {
+              const j = JSON.parse(text);
+              if (Array.isArray(j) && j[0]?.message) msg = j[0].message;
+              else if (j?.message) msg = j.message;
+            } catch { /* keep status message */ }
+            sendResponse({ success: false, error: msg });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
 
         return true;
       }

@@ -68,11 +68,14 @@
                 <div class="sticky top-24">
                     <p class="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3 px-3">Documentation</p>
                     <nav id="toc" class="space-y-1 text-sm">
+                        <a href="#whatsnew" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-brand-400 hover:text-white transition-colors">What's New</a>
                         <a href="#overview" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Overview</a>
                         <a href="#install" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Installation</a>
                         <a href="#getting-started" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Getting Started</a>
                         <p class="text-xs font-bold uppercase tracking-wider text-gray-500 mt-5 mb-2 px-3">Features</p>
                         <a href="#spotlight" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Spotlight Search</a>
+                        <a href="#record-id" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Open records by ID</a>
+                        <a href="#record-viewer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Record viewer & edit</a>
                         <a href="#dashboard" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Dashboard & Logs</a>
                         <a href="#detail" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Detail View</a>
                         <a href="#tree" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Execution Tree</a>
@@ -99,6 +102,25 @@
                     <h1 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight mb-4">SF Log Analyzer Guide</h1>
                     <p class="text-lg text-gray-400">Everything the extension can do, feature by feature — for Salesforce developers who want to debug Apex faster.</p>
                 </header>
+
+                <!-- What's New -->
+                <section id="whatsnew" class="doc-section mb-14">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.4.0</span>
+                    </div>
+                    <h3>What's New</h3>
+                    <p>The latest release makes record work dramatically faster and brings a fresh look to Spotlight.</p>
+                    <h4>v1.4.0 — Records, inline editing & dark mode</h4>
+                    <ul>
+                        <li><strong>Open records by ID</strong> — paste a 15- or 18-character record ID into Spotlight and instantly open the record or jump to its full field view. IDs are validated (18-char checksum) before any action is offered.</li>
+                        <li><strong>Record field viewer</strong> — press <code>Alt+D</code> (<code>Option+D</code> on Mac) on any record page to open a wide viewer showing <em>every</em> field on the object with its label, API name, type and value.</li>
+                        <li><strong>Access-aware</strong> — fields you can't read are shown by name but greyed out and marked "No access," so you always see the full picture of the object.</li>
+                        <li><strong>Inline edit &amp; save</strong> — copy any value, or edit updateable fields in place (text, checkbox and picklist inputs) and save straight back to Salesforce. Validation and permission errors are surfaced inline.</li>
+                        <li><strong>Dark mode for Spotlight</strong> — choose a light or dark Spotlight theme in Settings.</li>
+                        <li><strong>Report an issue</strong> — quick feedback links in the Spotlight footer and the log panel.</li>
+                    </ul>
+                </section>
 
                 <!-- Overview -->
                 <section id="overview" class="doc-section mb-14">
@@ -154,6 +176,40 @@
                         <li>Use <code>↑</code> / <code>↓</code> to move through results and <code>Enter</code> to open the highlighted one.</li>
                         <li>Press <code>Esc</code> or click the backdrop to dismiss.</li>
                     </ul>
+                </section>
+
+                <!-- Open records by ID -->
+                <section id="record-id" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-sky-500/15 flex items-center justify-center text-sky-400 mb-3"><i class="fa-solid fa-link"></i></div>
+                    <h3>Open Records by ID</h3>
+                    <p>Paste a Salesforce record ID into Spotlight and it's recognised instantly. The extension validates the ID — 15-character IDs by format, 18-character IDs by recomputing their checksum — so actions only appear for a genuinely valid ID.</p>
+                    <h4>What you get</h4>
+                    <ul>
+                        <li><strong>Open record</strong> — opens the record in Lightning in a new tab.</li>
+                        <li><strong>View all fields</strong> — opens the Record viewer (below) for that ID.</li>
+                        <li><strong>Open in Setup</strong> — shown for relevant objects, such as opening a User's detail page in Setup.</li>
+                    </ul>
+                    <p>Common key prefixes (Account, Contact, User, and so on) are recognised to give you a friendly label, and unknown prefixes still open correctly.</p>
+                </section>
+
+                <!-- Record viewer & inline edit -->
+                <section id="record-viewer" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-indigo-500/15 flex items-center justify-center text-indigo-400 mb-3"><i class="fa-solid fa-table-list"></i></div>
+                    <h3>Record Viewer &amp; Inline Edit</h3>
+                    <p>The Record viewer is a wide panel that lists <em>every</em> field defined on the object. Open it from "View all fields" after pasting an ID, or press <code>Alt+D</code> (<code>Option+D</code> on Mac) while you're on any record page.</p>
+                    <h4>Every field, access-aware</h4>
+                    <ul>
+                        <li>Each field shows its <strong>label</strong>, <strong>API name</strong>, <strong>type</strong> and <strong>value</strong>.</li>
+                        <li>Fields you don't have read access to are listed by name but greyed out and marked <em>No access</em> — so you see the complete object, not just what you can read.</li>
+                        <li>Filter fields by label, API name or value, and toggle <strong>Hide empty</strong> to focus on populated fields.</li>
+                    </ul>
+                    <h4>Copy, edit and save</h4>
+                    <ul>
+                        <li><strong>Copy</strong> any value to the clipboard with one click.</li>
+                        <li><strong>Edit</strong> updateable fields in place — a text box, checkbox or picklist depending on the field type. A <strong>Save</strong> button appears only once you change the value.</li>
+                        <li>On save the single field is written back to Salesforce. If Salesforce rejects it (field-level security, a validation rule, a required field), the exact error is shown inline so you can correct it.</li>
+                    </ul>
+                    <p>Reference (lookup) fields render as links you can follow to the related record.</p>
                 </section>
 
                 <!-- Dashboard -->
