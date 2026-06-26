@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "SF Log Analyzer",
+  "name": "SF Spotlite",
   "version": "1.4.0",
-  "description": "Analyze Salesforce system logs directly from your Salesforce environment",
+  "description": "Quick Navigation to Salesforce Setting and Records and Analyze Salesforce system logs",
   "icons": {
     "16": "icons/Spotlite-Icon-16.png",
     "32": "icons/Spotlite-Icon-32.png",
     "48": "icons/Spotlite-Icon-48.png",
     "128": "icons/Spotlite-Icon-128.png"
   },
-  "action": {
-    "default_title": "SF Log Analyzer",
+    "action": {
+    "default_title": "SF Spotlite",
     "default_icon": {
       "16": "icons/Spotlite-Icon-16.png",
       "32": "icons/Spotlite-Icon-32.png",
