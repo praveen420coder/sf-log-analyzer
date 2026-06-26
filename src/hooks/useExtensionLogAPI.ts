@@ -80,7 +80,7 @@ export function useExtensionLogAPI() {
         { type: 'FETCH_USER_INFO', instanceUrl: instUrl, sessionId: sessId },
         (response: any) => {
           if (response?.success) {
-            console.log('User info fetched successfully:', response.data);
+            //console.log('User info fetched successfully:', response.data);
             setUserInfo(response.data);
           } else {
             console.error('Failed to fetch user info:', response?.error);

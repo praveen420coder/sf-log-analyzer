@@ -126,6 +126,7 @@ const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
   { id: 'setup', label: 'Setup', placeholder: 'Search Salesforce Setup...' },
   { id: 'recent', label: 'Recent', placeholder: 'Search recently opened...' },
   { id: 'objects', label: 'Objects', placeholder: 'Search Objects...' },
+  { id: 'metadata', label: 'Metadata', placeholder: 'Search Custom Metadata & Settings...' },
   { id: 'users', label: 'Users', placeholder: 'Search Users...' },
   { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...' },
   { id: 'flows', label: 'Flows', placeholder: 'Search Flows...' },
@@ -246,6 +247,7 @@ loadRecents();
 let cachedUsers: any[] | null = null;
 let cachedFlows: any[] | null = null;
 let cachedObjects: any[] | null = null;
+let cachedMetadata: any[] | null = null;
 let cachedSecurity: any[] | null = null;
 let cachedApps: any[] | null = null;
 
@@ -1398,6 +1400,24 @@ function buildSpotlight(tabConfig: TabConfig) {
     }
   };
 
+  const fetchSalesforceMetadata = async (): Promise<any[]> => {
+    try {
+      const credentials = await getSfCredentials();
+      if (!credentials?.sessionId || !credentials?.instanceUrl) return [];
+      return await new Promise<any[]>((resolve) => {
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'GET_ALL_METADATA', instanceUrl: credentials.instanceUrl, sessionId: credentials.sessionId },
+          (response: any) => {
+            resolve(response?.success && response?.data ? response.data : []);
+          }
+        );
+      });
+    } catch (error) {
+      console.error('Error fetching Salesforce metadata:', error);
+      return [];
+    }
+  };
+
   const fetchSalesforceSecurity = async (): Promise<any[]> => {
     try {
       const credentials = await getSfCredentials();
@@ -1656,6 +1676,57 @@ function buildSpotlight(tabConfig: TabConfig) {
           onClick: () => {
             const url = `${lightningOrigin()}/lightning/setup/ObjectManager/${encodeURIComponent(o.durableId || o.apiName)}/FieldsAndRelationships/view`;
             recordRecent({ kind: 'object', icon: '📦', title: o.label || o.apiName, subtitle: o.apiName, meta: o.keyPrefix ? `Key prefix ${o.keyPrefix}` : undefined, url });
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        }));
+      });
+      resultsContainer.appendChild(resultsList);
+
+    } else if (activeTab === 'metadata') {
+      if (!cachedMetadata) cachedMetadata = await fetchSalesforceMetadata();
+      const mdList = cachedMetadata || [];
+
+      let filtered = mdList;
+      if (query.length > 0) {
+        filtered = mdList.filter((m) =>
+          (m.label || '').toLowerCase().includes(query) ||
+          (m.apiName || '').toLowerCase().includes(query)
+        );
+      } else {
+        filtered = mdList.slice(0, 50);
+      }
+
+      if (filtered.length === 0) {
+        showMessage(mdList.length === 0
+          ? 'No Custom Metadata Types or Custom Settings found (or no access).'
+          : 'No Custom Metadata or Settings match your search.');
+        return;
+      }
+
+      const manageUrl = (m: any): string => {
+        if (m.kind === 'mdt') {
+          return m.durableId
+            ? `${lightningOrigin()}/lightning/setup/CustomMetadata/page?address=%2F${m.durableId}`
+            : `${lightningOrigin()}/lightning/setup/CustomMetadata/home`;
+        }
+        return m.durableId
+          ? `${lightningOrigin()}/lightning/setup/CustomSettings/page?address=%2Fsetup%2Fui%2FlistCustomSettingsData.apexp%3Fid%3D${m.durableId}`
+          : `${lightningOrigin()}/lightning/setup/CustomSettings/home`;
+      };
+
+      const resultsList = document.createElement('div');
+      filtered.forEach((m, index) => {
+        const kindLabel = m.kind === 'mdt' ? 'Custom Metadata' : 'Custom Setting';
+        resultsList.appendChild(makeResultRow({
+          icon: m.kind === 'mdt' ? '🧩' : '⚙️',
+          title: m.label || m.apiName,
+          subtitle: `${m.apiName} · Manage records`,
+          meta: kindLabel,
+          first: index === 0,
+          onClick: () => {
+            const url = manageUrl(m);
+            recordRecent({ kind: 'metadata', icon: m.kind === 'mdt' ? '🧩' : '⚙️', title: m.label || m.apiName, subtitle: m.apiName, meta: kindLabel, url });
             window.open(url, '_blank');
             hideSpotlightSearch();
           },
@@ -2317,16 +2388,16 @@ function hideSpotlightSearch() {
 
 function injectSidebar() {
   if (!isSalesforcePage()) {
-    console.log('[SF Log Analyzer] Not a Salesforce page, skipping injection');
+    //console.log('[SF Log Analyzer] Not a Salesforce page, skipping injection');
     return;
   }
 
   if (document.getElementById('sf-log-analyzer-iframe')) {
-    console.log('[SF Log Analyzer] Already injected, skipping');
+    //console.log('[SF Log Analyzer] Already injected, skipping');
     return;
   }
 
-  console.log('[SF Log Analyzer] Injecting sidebar on Salesforce page');
+  //console.log('[SF Log Analyzer] Injecting sidebar on Salesforce page');
 
   loadSettings((settings) => {
     let isPanelOpen = false;
@@ -2457,7 +2528,7 @@ function injectSidebar() {
       if (event.altKey && event.code === 'KeyT') {
         event.preventDefault();
         event.stopPropagation();
-        console.log('[SF Log Analyzer] Alt/Option+T pressed on main page');
+        //console.log('[SF Log Analyzer] Alt/Option+T pressed on main page');
         showSpotlightSearch();
         return false;
       }
@@ -2470,7 +2541,7 @@ function injectSidebar() {
     };
 
     document.addEventListener('keydown', handleKeyDown, true);
-    console.log('[SF Log Analyzer] Keyboard shortcut listener attached to document');
+    //console.log('[SF Log Analyzer] Keyboard shortcut listener attached to document');
   });
 }
 

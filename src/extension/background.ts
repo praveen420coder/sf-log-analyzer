@@ -822,6 +822,56 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'GET_ALL_METADATA') {
+        // Custom Metadata Types (__mdt) and Custom Settings, for the Metadata tab.
+        // Global describe gives the customSetting flag + labels; EntityDefinition
+        // gives the DurableId needed to deep-link to "Manage Records".
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+
+        (async () => {
+          try {
+            const gd = await fetch(`${request.instanceUrl}/services/data/${V}/sobjects/`, { headers })
+              .then((r) => (r.ok ? r.json() : { sobjects: [] }));
+            const sobjects: any[] = gd.sobjects || [];
+
+            const info: Record<string, { label: string; kind: 'mdt' | 'setting' }> = {};
+            sobjects.forEach((s) => {
+              const name: string = s.name || '';
+              const isMdt = name.endsWith('__mdt');
+              const isSetting = s.customSetting === true;
+              if (isMdt || isSetting) info[name] = { label: s.label || name, kind: isMdt ? 'mdt' : 'setting' };
+            });
+
+            const names = Object.keys(info);
+            if (names.length === 0) { sendResponse({ success: true, data: [] }); return; }
+
+            // DurableId per object (chunk the IN clause to keep the query small).
+            const durable: Record<string, string> = {};
+            for (let i = 0; i < names.length; i += 100) {
+              const chunk = names.slice(i, i + 100);
+              const inClause = chunk.map((n) => `'${n.replace(/'/g, "\\'")}'`).join(',');
+              const q = `SELECT QualifiedApiName, DurableId FROM EntityDefinition WHERE QualifiedApiName IN (${inClause})`;
+              try {
+                const ed = await fetch(`${request.instanceUrl}/services/data/${V}/query?q=${encodeURIComponent(q)}`, { headers })
+                  .then((r) => (r.ok ? r.json() : { records: [] }));
+                (ed.records || []).forEach((r: any) => { durable[r.QualifiedApiName] = r.DurableId; });
+              } catch { /* leave durableId undefined → falls back to list home */ }
+            }
+
+            const data = names
+              .map((name) => ({ apiName: name, label: info[name].label, kind: info[name].kind, durableId: durable[name] || null }))
+              .sort((a, b) => a.label.localeCompare(b.label));
+
+            sendResponse({ success: true, data });
+          } catch (err: any) {
+            sendResponse({ success: false, error: err?.message || 'Failed to load metadata.' });
+          }
+        })();
+
+        return true;
+      }
+
       if (request.type === 'UPDATE_RECORD_FIELD') {
         // PATCH a single field on a record. Salesforce enforces FLS/validation;
         // any failure (no edit access, validation rule, required field) returns
