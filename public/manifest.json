@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SF Log Analyzer",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Analyze Salesforce system logs directly from your Salesforce environment",
   "icons": {
     "16": "icons/Spotlite-Icon-16.png",
