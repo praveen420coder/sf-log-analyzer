@@ -6,6 +6,7 @@ interface ExtensionSettings {
   opacity: number;
   width: number;
   verticalPosition: number;
+  spotlightTheme: 'light' | 'dark';
 }
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -13,7 +14,11 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   opacity: 100,
   width: 50,
   verticalPosition: 50,
+  spotlightTheme: 'light',
 };
+
+// Tracks the spotlight theme so buildSpotlight() (module-level) can read it.
+let currentSpotlightTheme: 'light' | 'dark' = 'light';
 
 const STORAGE_KEY = 'sf_log_analyzer_settings';
 
@@ -181,6 +186,9 @@ function saveTabConfig(cfg: TabConfig): void {
 
 loadTabConfig();
 
+// Load the saved spotlight theme so the modal renders with the right appearance.
+loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; });
+
 // ─── Recent items (clicked results) ──────────────────────────────────────────
 
 interface RecentItem {
@@ -287,6 +295,32 @@ function showSpotlightSearch() {
 }
 
 function buildSpotlight(tabConfig: TabConfig) {
+  // ─── Theme tokens (light / dark) ───────────────────────────
+  const isDark = currentSpotlightTheme === 'dark';
+  const T = {
+    backdrop: isDark ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.2)',
+    modalBg: isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.15)',
+    modalBorder: isDark ? 'rgba(148, 163, 184, 0.25)' : 'rgba(255, 255, 255, 0.3)',
+    divider: isDark ? 'rgba(148, 163, 184, 0.18)' : 'rgba(255, 255, 255, 0.1)',
+    surface: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.1)',
+    surfaceHover: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(255, 255, 255, 0.25)',
+    rowHover: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(245, 245, 245, 0.69)',
+    closeHover: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textSecondary: isDark ? 'rgba(226, 232, 240, 0.85)' : 'rgba(31, 41, 55, 0.8)',
+    textMuted: isDark ? 'rgba(203, 213, 225, 0.65)' : 'rgba(31, 41, 55, 0.6)',
+    textFaint: isDark ? 'rgba(148, 163, 184, 0.55)' : 'rgba(31, 41, 55, 0.45)',
+    tabInactive: isDark ? 'rgba(148, 163, 184, 0.7)' : 'rgba(31, 41, 55, 0.5)',
+    iconStroke: isDark ? '#cbd5e1' : '#1f2937',
+    scrollThumb: isDark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(31, 41, 55, 0.25)',
+    scrollThumbHover: isDark ? 'rgba(148, 163, 184, 0.55)' : 'rgba(31, 41, 55, 0.45)',
+    accent: '#3b82f6',
+    chipBorder: isDark ? 'rgba(148, 163, 184, 0.25)' : 'rgba(31, 41, 55, 0.12)',
+    chipBg: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.35)',
+    chipBgHidden: isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(31, 41, 55, 0.04)',
+    btnNeutralBg: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(31, 41, 55, 0.08)',
+  };
+
   const spotlightContainer = document.createElement('div');
   spotlightContainer.id = 'sf-log-analyzer-spotlight-container';
   spotlightContainer.style.position = 'fixed';
@@ -319,7 +353,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   backdrop.style.left = '0';
   backdrop.style.width = '100%';
   backdrop.style.height = '100%';
-  backdrop.style.backgroundColor = 'rgba(0, 0, 0, 0.2)';
+  backdrop.style.backgroundColor = T.backdrop;
   backdrop.style.zIndex = '1';
   backdrop.style.cursor = 'pointer';
   backdrop.style.pointerEvents = 'auto';
@@ -332,11 +366,11 @@ function buildSpotlight(tabConfig: TabConfig) {
   modal.style.position = 'relative';
   modal.style.width = '100%';
   modal.style.maxWidth = '768px';
-  modal.style.backgroundColor = 'rgba(255, 255, 255, 0.15)';
+  modal.style.backgroundColor = T.modalBg;
   modal.style.backdropFilter = 'blur(25px)';
   modal.style.borderRadius = '24px';
   modal.style.boxShadow = '0 25px 50px rgba(0, 0, 0, 0.5)';
-  modal.style.border = '1px solid rgba(255, 255, 255, 0.3)';
+  modal.style.border = `1px solid ${T.modalBorder}`;
   modal.style.overflow = 'hidden';
   modal.style.zIndex = '2';
   modal.style.pointerEvents = 'auto';
@@ -346,25 +380,26 @@ function buildSpotlight(tabConfig: TabConfig) {
   inputContainer.style.display = 'flex';
   inputContainer.style.alignItems = 'center';
   inputContainer.style.padding = '24px 32px';
-  inputContainer.style.borderBottom = '1px solid rgba(255, 255, 255, 0.1)';
+  inputContainer.style.borderBottom = `1px solid ${T.divider}`;
 
   const searchSvg = document.createElement('div');
-  searchSvg.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1f2937" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>';
+  searchSvg.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="${T.iconStroke}" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>`;
   searchSvg.style.marginRight = '16px';
   searchSvg.style.flexShrink = '0';
 
   const searchInput = document.createElement('input');
+  searchInput.id = 'sf-spotlight-input';
   searchInput.type = 'text';
   searchInput.placeholder = 'Search Salesforce Setup...';
   searchInput.style.flex = '1';
   searchInput.style.backgroundColor = 'transparent';
   searchInput.style.fontSize = '22px';
-  searchInput.style.color = '#1f2937';
+  searchInput.style.color = T.textPrimary;
   searchInput.style.border = 'none';
   searchInput.style.outline = 'none';
   searchInput.style.fontWeight = '600';
   searchInput.style.fontFamily = 'inherit';
-  searchInput.style.caretColor = '#1f2937';
+  searchInput.style.caretColor = T.textPrimary;
   searchInput.style.textShadow = '0 1px 3px rgba(0, 0, 0, 0.05)';
 
   const closeBtn = document.createElement('button');
@@ -375,8 +410,8 @@ function buildSpotlight(tabConfig: TabConfig) {
   closeBtn.style.cursor = 'pointer';
   closeBtn.style.borderRadius = '8px';
   closeBtn.style.transition = 'background-color 0.2s';
-  closeBtn.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1f2937" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-  closeBtn.addEventListener('mouseover', () => { closeBtn.style.backgroundColor = 'rgba(0, 0, 0, 0.1)'; });
+  closeBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="${T.iconStroke}" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+  closeBtn.addEventListener('mouseover', () => { closeBtn.style.backgroundColor = T.closeHover; });
   closeBtn.addEventListener('mouseout', () => { closeBtn.style.backgroundColor = 'transparent'; });
   closeBtn.addEventListener('click', () => hideSpotlightSearch());
 
@@ -386,8 +421,8 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   // Tabs (rendered dynamically from config)
   const tabsContainer = document.createElement('div');
-  tabsContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
-  tabsContainer.style.borderBottom = '1px solid rgba(255, 255, 255, 0.15)';
+  tabsContainer.style.backgroundColor = T.surface;
+  tabsContainer.style.borderBottom = `1px solid ${T.divider}`;
   tabsContainer.style.padding = '0 32px';
   tabsContainer.style.gap = '28px';
   tabsContainer.style.display = 'flex';
@@ -400,26 +435,31 @@ function buildSpotlight(tabConfig: TabConfig) {
   resultsContainer.style.maxHeight = '400px';
   resultsContainer.style.overflowY = 'auto';
   resultsContainer.style.scrollbarWidth = 'thin';
-  resultsContainer.style.scrollbarColor = 'rgba(31, 41, 55, 0.35) transparent';
+  resultsContainer.style.scrollbarColor = `${T.scrollThumb} transparent`;
   resultsContainer.style.scrollBehavior = 'smooth';
 
-  if (!document.getElementById('sf-spotlight-scrollbar-style')) {
-    const scrollbarStyle = document.createElement('style');
-    scrollbarStyle.id = 'sf-spotlight-scrollbar-style';
+  // (Re)build the scoped style block each time so it tracks the active theme.
+  {
+    let scrollbarStyle = document.getElementById('sf-spotlight-scrollbar-style') as HTMLStyleElement | null;
+    if (!scrollbarStyle) {
+      scrollbarStyle = document.createElement('style');
+      scrollbarStyle.id = 'sf-spotlight-scrollbar-style';
+      document.head.appendChild(scrollbarStyle);
+    }
     scrollbarStyle.textContent = `
       #sf-log-analyzer-spotlight-container ::-webkit-scrollbar { width: 10px; }
       #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-track { background: transparent; margin: 12px 0; }
-      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb { background: rgba(31, 41, 55, 0.25); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; transition: background 0.2s ease; }
-      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb:hover { background: rgba(31, 41, 55, 0.45); background-clip: padding-box; }
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb { background: ${T.scrollThumb}; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; transition: background 0.2s ease; }
+      #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-thumb:hover { background: ${T.scrollThumbHover}; background-clip: padding-box; }
       #sf-log-analyzer-spotlight-container ::-webkit-scrollbar-corner { background: transparent; }
+      #sf-spotlight-input::placeholder { color: ${T.textFaint}; opacity: 1; }
     `;
-    document.head.appendChild(scrollbarStyle);
   }
 
   const noResults = document.createElement('div');
   noResults.style.padding = '64px 32px';
   noResults.style.textAlign = 'center';
-  noResults.innerHTML = '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="rgba(255, 255, 255, 0.4)" stroke-width="2" style="margin: 0 auto 16px"><circle color="#1f2937" cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg><p style="color: #1f2937; font-weight: 600; margin: 0; font-size: 16px">No results found</p><p style="color: rgba(31, 41, 55, 0.6); font-size: 14px; margin: 8px 0 0 0">Try searching for something else</p>';
+  noResults.innerHTML = `<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="${T.textFaint}" stroke-width="2" style="margin: 0 auto 16px"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg><p style="color: ${T.textPrimary}; font-weight: 600; margin: 0; font-size: 16px">No results found</p><p style="color: ${T.textMuted}; font-size: 14px; margin: 8px 0 0 0">Try searching for something else</p>`;
   resultsContainer.appendChild(noResults);
 
   // ─── Footer (brand + keyboard hints) ───────────────────────
@@ -437,15 +477,23 @@ function buildSpotlight(tabConfig: TabConfig) {
   hintsBar.style.justifyContent = 'space-between';
   hintsBar.style.gap = '16px';
   hintsBar.style.padding = '12px 24px';
-  hintsBar.style.borderTop = '1px solid rgba(31, 41, 55, 0.08)';
-  hintsBar.style.backgroundColor = 'rgba(255, 255, 255, 0.12)';
+  hintsBar.style.borderTop = `1px solid ${T.divider}`;
+  hintsBar.style.backgroundColor = T.surface;
 
-  // Brand (left)
-  const brand = document.createElement('div');
+  // Brand (left) — clickable, opens the documentation site
+  const brand = document.createElement('a');
+  brand.href = 'https://praveen420coder.github.io/sf-log-analyzer/';
+  brand.target = '_blank';
+  brand.rel = 'noopener noreferrer';
+  brand.title = 'Open documentation';
   brand.style.display = 'flex';
   brand.style.alignItems = 'center';
   brand.style.gap = '10px';
   brand.style.flexShrink = '0';
+  brand.style.textDecoration = 'none';
+  brand.style.cursor = 'pointer';
+  brand.addEventListener('mouseover', () => { brand.style.opacity = '0.7'; });
+  brand.addEventListener('mouseout', () => { brand.style.opacity = '1'; });
 
   const logo = document.createElement('div');
   logo.style.width = '18px';
@@ -458,7 +506,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   const brandText = document.createElement('div');
   brandText.style.fontSize = '13px';
   brandText.style.whiteSpace = 'nowrap';
-  brandText.innerHTML = '<span style="font-weight:700;color:#1f2937;">Spotlite</span> <span style="color:rgba(31,41,55,0.5);font-weight:500;"> for Salesforce</span>';
+  brandText.innerHTML = `<span style="font-weight:700;color:${T.textPrimary};">Spotlite</span> <span style="color:${T.textFaint};font-weight:500;"> for Salesforce</span>`;
 
   brand.appendChild(logo);
   brand.appendChild(brandText);
@@ -489,17 +537,53 @@ function buildSpotlight(tabConfig: TabConfig) {
     keySpan.textContent = hint.key;
     keySpan.style.fontSize = '13px';
     keySpan.style.fontWeight = '600';
-    keySpan.style.color = 'rgba(31, 41, 55, 0.6)';
+    keySpan.style.color = T.textMuted;
 
     const labelSpan = document.createElement('span');
     labelSpan.textContent = hint.label;
     labelSpan.style.fontSize = '13px';
-    labelSpan.style.color = 'rgba(31, 41, 55, 0.45)';
+    labelSpan.style.color = T.textFaint;
 
     hintItem.appendChild(keySpan);
     hintItem.appendChild(labelSpan);
     hintsRight.appendChild(hintItem);
   });
+
+  // Docs link (explicit, next to the keyboard hints)
+  const docsLink = document.createElement('a');
+  docsLink.href = 'https://praveen420coder.github.io/sf-log-analyzer/';
+  docsLink.target = '_blank';
+  docsLink.rel = 'noopener noreferrer';
+  docsLink.style.display = 'flex';
+  docsLink.style.alignItems = 'center';
+  docsLink.style.gap = '6px';
+  docsLink.style.fontSize = '13px';
+  docsLink.style.fontWeight = '600';
+  docsLink.style.color = T.textMuted;
+  docsLink.style.textDecoration = 'none';
+  docsLink.style.whiteSpace = 'nowrap';
+  docsLink.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg><span>Docs</span>';
+  docsLink.addEventListener('mouseover', () => { docsLink.style.color = T.textPrimary; });
+  docsLink.addEventListener('mouseout', () => { docsLink.style.color = T.textMuted; });
+  hintsRight.appendChild(docsLink);
+
+  // Report an issue link (opens a new GitHub issue)
+  const reportLink = document.createElement('a');
+  reportLink.href = 'https://forms.gle/ed2VcwQTJXTDaMUv6';
+  reportLink.target = '_blank';
+  reportLink.rel = 'noopener noreferrer';
+  reportLink.style.display = 'flex';
+  reportLink.style.alignItems = 'center';
+  reportLink.style.gap = '6px';
+  reportLink.style.fontSize = '13px';
+  reportLink.style.fontWeight = '600';
+  reportLink.style.color = T.textMuted;
+  reportLink.style.textDecoration = 'none';
+  reportLink.style.whiteSpace = 'nowrap';
+  reportLink.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="6" width="8" height="14" rx="4"></rect><path d="m19 7-3 2"></path><path d="m5 7 3 2"></path><path d="M19 19l-3-2"></path><path d="m5 19 3-2"></path><path d="M20 13h-4"></path><path d="M4 13h4"></path><path d="m10 4 1 2"></path><path d="m14 4-1 2"></path></svg><span>Report issue</span>';
+  reportLink.addEventListener('mouseover', () => { reportLink.style.color = T.textPrimary; });
+  reportLink.addEventListener('mouseout', () => { reportLink.style.color = T.textMuted; });
+  hintsRight.appendChild(reportLink);
 
   hintsBar.appendChild(brand);
   hintsBar.appendChild(hintsRight);
@@ -519,7 +603,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     const d = document.createElement('div');
     d.style.padding = '64px 32px';
     d.style.textAlign = 'center';
-    d.style.color = '#1f2937';
+    d.style.color = T.textPrimary;
     d.style.fontWeight = '600';
     d.textContent = msg;
     resultsContainer.appendChild(d);
@@ -534,19 +618,19 @@ function buildSpotlight(tabConfig: TabConfig) {
     resultItem.style.gap = '16px';
     resultItem.style.transition = 'all 0.2s';
     resultItem.style.textAlign = 'left';
-    resultItem.style.backgroundColor = opts.first ? 'rgba(255, 255, 255, 0.1)' : 'transparent';
-    resultItem.style.borderBottom = '1px solid rgba(255, 255, 255, 0.1)';
+    resultItem.style.backgroundColor = opts.first ? T.surface : 'transparent';
+    resultItem.style.borderBottom = `1px solid ${T.divider}`;
     resultItem.style.border = 'none';
     resultItem.style.cursor = 'pointer';
     resultItem.style.fontFamily = 'inherit';
-    resultItem.style.color = 'white';
+    resultItem.style.color = T.textPrimary;
 
     const iconContainer = document.createElement('div');
     iconContainer.style.flexShrink = '0';
     iconContainer.style.width = '48px';
     iconContainer.style.height = '48px';
     iconContainer.style.borderRadius = '12px';
-    iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    iconContainer.style.backgroundColor = T.surface;
     iconContainer.style.display = 'flex';
     iconContainer.style.alignItems = 'center';
     iconContainer.style.justifyContent = 'center';
@@ -561,7 +645,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     const title = document.createElement('div');
     title.style.fontWeight = '700';
     title.style.fontSize = '17px';
-    title.style.color = '#1f2937';
+    title.style.color = T.textPrimary;
     title.style.marginBottom = '6px';
     title.style.textShadow = '0 1px 2px rgba(0, 0, 0, 0.1)';
     title.textContent = opts.title;
@@ -570,7 +654,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     if (opts.subtitle) {
       const s = document.createElement('div');
       s.style.fontSize = '14px';
-      s.style.color = 'rgba(31, 41, 55, 0.8)';
+      s.style.color = T.textSecondary;
       s.style.marginBottom = '4px';
       s.style.wordBreak = 'break-all';
       s.textContent = opts.subtitle;
@@ -579,14 +663,14 @@ function buildSpotlight(tabConfig: TabConfig) {
     if (opts.meta) {
       const m = document.createElement('div');
       m.style.fontSize = '13px';
-      m.style.color = 'rgba(31, 41, 55, 0.6)';
+      m.style.color = T.textMuted;
       m.textContent = opts.meta;
       contentContainer.appendChild(m);
     }
 
     const externalLink = document.createElement('div');
     externalLink.style.flexShrink = '0';
-    externalLink.style.color = 'rgba(31, 41, 55, 0.6)';
+    externalLink.style.color = T.textMuted;
     externalLink.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>';
 
     resultItem.appendChild(iconContainer);
@@ -594,14 +678,14 @@ function buildSpotlight(tabConfig: TabConfig) {
     resultItem.appendChild(externalLink);
 
     resultItem.addEventListener('mouseover', () => {
-      resultItem.style.backgroundColor = 'rgba(245, 245, 245, 0.69)';
-      iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.25)';
-      externalLink.style.color = '#1f2937';
+      resultItem.style.backgroundColor = T.rowHover;
+      iconContainer.style.backgroundColor = T.surfaceHover;
+      externalLink.style.color = T.textPrimary;
     });
     resultItem.addEventListener('mouseout', () => {
       resultItem.style.backgroundColor = 'transparent';
-      iconContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-      externalLink.style.color = 'rgba(31, 41, 55, 0.6)';
+      iconContainer.style.backgroundColor = T.surface;
+      externalLink.style.color = T.textMuted;
     });
     resultItem.addEventListener('click', opts.onClick);
     return resultItem;
@@ -774,10 +858,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         clearBtn.style.cursor = 'pointer';
         clearBtn.style.fontSize = '13px';
         clearBtn.style.fontWeight = '600';
-        clearBtn.style.color = 'rgba(31, 41, 55, 0.6)';
+        clearBtn.style.color = T.textMuted;
         clearBtn.style.fontFamily = 'inherit';
-        clearBtn.addEventListener('mouseover', () => { clearBtn.style.color = '#1f2937'; });
-        clearBtn.addEventListener('mouseout', () => { clearBtn.style.color = 'rgba(31, 41, 55, 0.6)'; });
+        clearBtn.addEventListener('mouseover', () => { clearBtn.style.color = T.textPrimary; });
+        clearBtn.addEventListener('mouseout', () => { clearBtn.style.color = T.textMuted; });
         clearBtn.addEventListener('click', async () => { clearRecents(); await performSearch(); });
         clearRow.appendChild(clearBtn);
         resultsContainer.appendChild(clearRow);
@@ -913,10 +997,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         resultItem.style.justifyContent = 'space-between';
         resultItem.style.gap = '16px';
         resultItem.style.transition = 'all 0.2s';
-        resultItem.style.backgroundColor = index === 0 ? 'rgba(255, 255, 255, 0.08)' : 'transparent';
-        resultItem.style.borderBottom = '1px solid rgba(255, 255, 255, 0.08)';
+        resultItem.style.backgroundColor = index === 0 ? T.surface : 'transparent';
+        resultItem.style.borderBottom = `1px solid ${T.divider}`;
         resultItem.style.fontFamily = 'inherit';
-        resultItem.style.color = 'white';
+        resultItem.style.color = T.textPrimary;
 
         const contentContainer = document.createElement('div');
         contentContainer.style.flex = '1';
@@ -925,13 +1009,13 @@ function buildSpotlight(tabConfig: TabConfig) {
         const name = document.createElement('div');
         name.style.fontWeight = '700';
         name.style.fontSize = '15px';
-        name.style.color = '#1f2937';
+        name.style.color = T.textPrimary;
         name.style.marginBottom = '4px';
         name.textContent = user.name;
 
         const email = document.createElement('div');
         email.style.fontSize = '12px';
-        email.style.color = 'rgba(31, 41, 55, 0.7)';
+        email.style.color = T.textSecondary;
         email.textContent = user.email || user.username;
 
         contentContainer.appendChild(name);
@@ -1216,7 +1300,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   const makeTabButton = (text: string) => {
     const b = document.createElement('button');
     b.textContent = text;
-    b.style.color = 'rgba(31, 41, 55, 0.5)';
+    b.style.color = T.tabInactive;
     b.style.borderBottom = '3px solid transparent';
     b.style.padding = '12px 0';
     b.style.fontWeight = '600';
@@ -1231,8 +1315,8 @@ function buildSpotlight(tabConfig: TabConfig) {
   };
 
   const styleTabButton = (b: HTMLButtonElement, active: boolean) => {
-    b.style.color = active ? '#1f2937' : 'rgba(31, 41, 55, 0.5)';
-    b.style.borderBottom = active ? '3px solid #3b82f6' : '3px solid transparent';
+    b.style.color = active ? T.textPrimary : T.tabInactive;
+    b.style.borderBottom = active ? `3px solid ${T.accent}` : '3px solid transparent';
   };
 
   const tabButtons: Record<string, HTMLButtonElement> = {};
@@ -1304,14 +1388,14 @@ function buildSpotlight(tabConfig: TabConfig) {
     heading.textContent = 'Customize tabs';
     heading.style.fontSize = '16px';
     heading.style.fontWeight = '700';
-    heading.style.color = '#1f2937';
+    heading.style.color = T.textPrimary;
     heading.style.marginBottom = '4px';
     wrap.appendChild(heading);
 
     const sub = document.createElement('div');
     sub.textContent = 'Drag to reorder · pick a default · show or hide';
     sub.style.fontSize = '13px';
-    sub.style.color = 'rgba(31, 41, 55, 0.6)';
+    sub.style.color = T.textMuted;
     sub.style.marginBottom = '16px';
     wrap.appendChild(sub);
 
@@ -1332,8 +1416,8 @@ function buildSpotlight(tabConfig: TabConfig) {
       row.style.padding = '12px 14px';
       row.style.marginBottom = '8px';
       row.style.borderRadius = '12px';
-      row.style.border = '1px solid rgba(31, 41, 55, 0.12)';
-      row.style.backgroundColor = isHidden ? 'rgba(31, 41, 55, 0.04)' : 'rgba(255, 255, 255, 0.35)';
+      row.style.border = `1px solid ${T.chipBorder}`;
+      row.style.backgroundColor = isHidden ? T.chipBgHidden : T.chipBg;
       row.style.cursor = 'grab';
       row.style.transition = 'border-color 0.15s';
       row.style.opacity = isHidden ? '0.55' : '1';
@@ -1341,7 +1425,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       const handle = document.createElement('span');
       handle.textContent = '⠿';
       handle.style.fontSize = '18px';
-      handle.style.color = 'rgba(31, 41, 55, 0.45)';
+      handle.style.color = T.textFaint;
       handle.style.cursor = 'grab';
       row.appendChild(handle);
 
@@ -1350,7 +1434,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       label.style.flex = '1';
       label.style.fontSize = '15px';
       label.style.fontWeight = '600';
-      label.style.color = '#1f2937';
+      label.style.color = T.textPrimary;
       row.appendChild(label);
 
       const defBtn = document.createElement('button');
@@ -1362,8 +1446,8 @@ function buildSpotlight(tabConfig: TabConfig) {
       defBtn.style.border = 'none';
       defBtn.style.cursor = isHidden ? 'not-allowed' : 'pointer';
       defBtn.style.fontFamily = 'inherit';
-      defBtn.style.backgroundColor = isDefault ? 'rgba(59, 130, 246, 1)' : 'rgba(31, 41, 55, 0.08)';
-      defBtn.style.color = isDefault ? '#fff' : 'rgba(31, 41, 55, 0.8)';
+      defBtn.style.backgroundColor = isDefault ? 'rgba(59, 130, 246, 1)' : T.btnNeutralBg;
+      defBtn.style.color = isDefault ? '#fff' : T.textSecondary;
       defBtn.style.opacity = isHidden ? '0.4' : '1';
       defBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1383,8 +1467,8 @@ function buildSpotlight(tabConfig: TabConfig) {
       hideBtn.style.border = 'none';
       hideBtn.style.cursor = 'pointer';
       hideBtn.style.fontFamily = 'inherit';
-      hideBtn.style.backgroundColor = 'rgba(31, 41, 55, 0.08)';
-      hideBtn.style.color = 'rgba(31, 41, 55, 0.8)';
+      hideBtn.style.backgroundColor = T.btnNeutralBg;
+      hideBtn.style.color = T.textSecondary;
       hideBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (isHidden) {
@@ -1417,11 +1501,11 @@ function buildSpotlight(tabConfig: TabConfig) {
         row.style.borderColor = 'rgba(59, 130, 246, 0.8)';
       });
       row.addEventListener('dragleave', () => {
-        row.style.borderColor = 'rgba(31, 41, 55, 0.12)';
+        row.style.borderColor = T.chipBorder;
       });
       row.addEventListener('drop', (e) => {
         e.preventDefault();
-        row.style.borderColor = 'rgba(31, 41, 55, 0.12)';
+        row.style.borderColor = T.chipBorder;
         if (!dragSrcId || dragSrcId === id) return;
         const order = [...tabConfig.order];
         const from = order.indexOf(dragSrcId);
@@ -1445,9 +1529,9 @@ function buildSpotlight(tabConfig: TabConfig) {
     reset.style.fontWeight = '600';
     reset.style.padding = '8px 14px';
     reset.style.borderRadius = '8px';
-    reset.style.border = '1px solid rgba(31, 41, 55, 0.15)';
+    reset.style.border = `1px solid ${T.chipBorder}`;
     reset.style.backgroundColor = 'transparent';
-    reset.style.color = 'rgba(31, 41, 55, 0.8)';
+    reset.style.color = T.textSecondary;
     reset.style.cursor = 'pointer';
     reset.style.fontFamily = 'inherit';
     reset.addEventListener('click', () => {
@@ -1603,6 +1687,7 @@ function injectSidebar() {
         applySettingsToIframe(iframe, backdrop, settings, event.data.isOpen);
       } else if (event.data.type === 'SF_LOG_ANALYZER_SETTINGS_CHANGED') {
         Object.assign(settings, event.data.settings);
+        currentSpotlightTheme = settings.spotlightTheme;
         applySettingsToIframe(iframe, backdrop, settings, isPanelOpen);
       } else if (event.data.type === 'SF_SPOTLIGHT_SHORTCUT') {
         // ✅ Triggered from inside the iframe (Mac fix)

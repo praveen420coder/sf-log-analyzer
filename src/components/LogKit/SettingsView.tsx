@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, RotateCcw } from 'lucide-react';
+import { Settings, RotateCcw, Sun, Moon } from 'lucide-react';
 import type { ExtensionSettings } from '../../hooks/useSettings';
 
 interface SettingsViewProps {
@@ -42,6 +42,35 @@ const SettingsView: React.FC<SettingsViewProps> = ({
                   }`}
                 >
                   {pos.charAt(0).toUpperCase() + pos.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Spotlight Theme Setting */}
+        <div className="border-2 border-black rounded-2xl p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-black uppercase tracking-wider text-black mb-1">
+              Spotlight Theme
+            </label>
+            <p className="text-xs text-gray-500 font-semibold mb-3">Appearance of the Spotlight search modal (Alt + T)</p>
+            <div className="flex gap-4">
+              {([
+                { value: 'light', label: 'Light', Icon: Sun },
+                { value: 'dark', label: 'Dark', Icon: Moon },
+              ] as const).map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  onClick={() => onSettingsChange({ spotlightTheme: value })}
+                  className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-bold uppercase tracking-wider transition-all border-2 ${
+                    settings.spotlightTheme === value
+                      ? 'border-black bg-black text-white'
+                      : 'border-black bg-white text-black hover:bg-gray-50'
+                  }`}
+                >
+                  <Icon size={18} />
+                  {label}
                 </button>
               ))}
             </div>

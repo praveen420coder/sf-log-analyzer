@@ -5,6 +5,7 @@ export interface ExtensionSettings {
   opacity: number; // 0-100
   width: number; // percentage of viewport
   verticalPosition: number; // 0-100 (0 = top, 50 = middle, 100 = bottom)
+  spotlightTheme: 'light' | 'dark'; // Spotlight modal appearance
 }
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -12,6 +13,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   opacity: 100,
   width: 50,
   verticalPosition: 50,
+  spotlightTheme: 'light',
 };
 
 const STORAGE_KEY = 'sf_log_analyzer_settings';

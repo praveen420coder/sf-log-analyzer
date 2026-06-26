@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, X, Zap, Settings, Database, Code, ExternalLink } from 'lucide-react';
+import { Search, X, Zap, Settings, Database, Code, ExternalLink, BookOpen } from 'lucide-react';
 
 interface SpotlightItem {
   id: string;
@@ -247,10 +247,17 @@ const SpotlightSearch: React.FC<SpotlightSearchProps> = ({ isOpen, onClose, inst
           </div>
 
           {/* Footer */}
-          {filteredItems.length > 0 && (
-            <div className="px-8 py-4 border-t border-white/20 bg-white/5 backdrop-blur-sm text-xs text-white/60 flex items-center justify-between">
-              <div>
-                {filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''}
+          <div className="px-8 py-4 border-t border-white/20 bg-white/5 backdrop-blur-sm text-xs text-white/60 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <span>{filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''}</span>
+                <a
+                  href="https://praveen420coder.github.io/sf-log-analyzer/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-white/60 hover:text-white transition-colors"
+                >
+                  <BookOpen size={13} /> Docs
+                </a>
               </div>
               <div className="flex gap-3 items-center">
                 <kbd className="px-3 py-1 rounded bg-white/10 backdrop-blur-md border border-white/20 text-xs font-semibold text-white/70">
@@ -267,7 +274,6 @@ const SpotlightSearch: React.FC<SpotlightSearchProps> = ({ isOpen, onClose, inst
                 <span>Close</span>
               </div>
             </div>
-          )}
         </div>
       </div>
     </div>

@@ -194,9 +194,27 @@ export default function App() {
           </main>
 
           <footer className="p-8 bg-white border-t border-gray-100 flex items-center justify-between">
-            <p className="text-[9px] font-black uppercase tracking-[0.4em] text-gray-300">
-              © 2026 Praveen Kumar
-            </p>
+            <div className="flex items-center gap-5">
+              <p className="text-[9px] font-black uppercase tracking-[0.4em] text-gray-300">
+                © 2026 Praveen Kumar
+              </p>
+              <a
+                href="https://praveen420coder.github.io/sf-log-analyzer/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 hover:text-blue-500 transition-colors"
+              >
+                Docs
+              </a>
+              <a
+                href="https://forms.gle/ed2VcwQTJXTDaMUv6"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 hover:text-blue-500 transition-colors"
+              >
+                Report Issue
+              </a>
+            </div>
             {isConnected && (
               <div className="flex items-center space-x-3">
                 <div className="w-2 h-2 rounded-full animate-pulse bg-blue-500"></div>
