@@ -1,10 +1,10 @@
-# Privacy Policy for SF Log Analyzer
+# Privacy Policy for SF Spotlight
 
 **Last Updated:** February 24, 2026
 
 ## Introduction
 
-SF Log Analyzer ("the Extension") is a Chrome browser extension designed to help Salesforce administrators and developers analyze system debug logs directly from their Salesforce environment. This Privacy Policy explains how the Extension handles your data.
+SF Spotlight ("the Extension") is a Chrome browser extension designed to help Salesforce administrators and developers analyze system debug logs directly from their Salesforce environment. This Privacy Policy explains how the Extension handles your data.
 
 ## Data Collection and Usage
 
@@ -90,4 +90,4 @@ https://github.com/praveen420coder/sf-log-analyzer
 
 ---
 
-**Summary**: SF Log Analyzer is a privacy-focused tool that processes all data locally in your browser. We do not collect, store, or share your personal information or Salesforce data with any third parties.
+**Summary**: SF Spotlight is a privacy-focused tool that processes all data locally in your browser. We do not collect, store, or share your personal information or Salesforce data with any third parties.

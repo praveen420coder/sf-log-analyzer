@@ -1,7 +1,7 @@
-# GitHub Copilot Instructions for SF Log Analyzer
+# GitHub Copilot Instructions for SF Spotlight
 
 ## Project Overview
-SF Log Analyzer is a modern React + TypeScript application for analyzing Salesforce system logs. It provides a dashboard view for metrics and a detail view for in-depth log exploration.
+SF Spotlight is a modern React + TypeScript application for analyzing Salesforce system logs. It provides a dashboard view for metrics and a detail view for in-depth log exploration.
 
 ## Code Style & Conventions
 

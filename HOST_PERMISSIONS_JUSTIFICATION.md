@@ -1,8 +1,8 @@
-# Host Permissions Justification for SF Log Analyzer
+# Host Permissions Justification for SF Spotlight
 
 ## Extension Purpose
 
-SF Log Analyzer is a developer tool designed for Salesforce administrators and developers to analyze debug logs directly from their Salesforce environment. The extension retrieves debug logs via Salesforce's official REST APIs and provides enhanced analysis capabilities within the Salesforce interface.
+SF Spotlight is a developer tool designed for Salesforce administrators and developers to analyze debug logs directly from their Salesforce environment. The extension retrieves debug logs via Salesforce's official REST APIs and provides enhanced analysis capabilities within the Salesforce interface.
 
 ## Core Functionality Requirements
 
@@ -105,4 +105,4 @@ This extension is open source, allowing complete transparency:
 - Users can inspect the code to confirm no unauthorized data collection
 - No obfuscated code or hidden functionality
 
-**Summary**: Host permissions are essential for SF Log Analyzer to authenticate with and retrieve debug logs from any Salesforce organization across all official deployment types (production, sandbox, government, international, and specialized cloud environments). The wildcard domain patterns are necessary due to Salesforce's dynamic multi-tenant architecture and are limited strictly to official Salesforce domains.
+**Summary**: Host permissions are essential for SF Spotlight to authenticate with and retrieve debug logs from any Salesforce organization across all official deployment types (production, sandbox, government, international, and specialized cloud environments). The wildcard domain patterns are necessary due to Salesforce's dynamic multi-tenant architecture and are limited strictly to official Salesforce domains.

@@ -426,25 +426,35 @@ let cachedSecurity: any[] | null = null;
 let currentUserId: string | null = null;
 let cachedApps: any[] | null = null;
 
+// Full-page mode: spotlight.html?host=<sfHost> opens in its own tab, so there's
+// no Salesforce host in window.location — we carry it in the query string.
+const SPOTLIGHT_PAGE = typeof location !== 'undefined' && location.pathname.endsWith('spotlight.html');
+let pageHost: string | null = null;
+if (SPOTLIGHT_PAGE) {
+  try { pageHost = new URLSearchParams(location.search).get('host'); } catch { pageHost = null; }
+}
+function sfHostname(): string { return pageHost || window.location.hostname; }
+function sfProtocol(): string { return pageHost ? 'https:' : window.location.protocol; }
+
 function cleanSfDomain(domain: string): string {
   return domain.replace(/\.lightning\.force\./, '.my.salesforce.').replace(/\.mcas\.ms$/, '');
 }
 
 function lightningOrigin(): string {
-  const host = window.location.hostname
+  const host = sfHostname()
     .replace(/\.mcas\.ms$/, '')
     .replace(/\.my\.salesforce\.com$/, '.lightning.force.com');
-  return `${window.location.protocol}//${host}`;
+  return `${sfProtocol()}//${host}`;
 }
 
 // Lightning apps open via the Setup domain: <mydomain>.my.salesforce-setup.com
 // using /lightning?appContextId=<AppDefinition DurableId>.
 function setupOrigin(): string {
-  const host = window.location.hostname
+  const host = sfHostname()
     .replace(/\.mcas\.ms$/, '')
     .replace(/\.lightning\.force\.com$/, '.my.salesforce-setup.com')
     .replace(/\.my\.salesforce\.com$/, '.my.salesforce-setup.com');
-  return `${window.location.protocol}//${host}`;
+  return `${sfProtocol()}//${host}`;
 }
 
 function getSfCredentials(): Promise<any> {
@@ -452,7 +462,7 @@ function getSfCredentials(): Promise<any> {
     const chromeRuntime = (globalThis as any).chrome?.runtime;
     if (!chromeRuntime) return resolve(null);
     chromeRuntime.sendMessage(
-      { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(window.location.hostname) },
+      { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(sfHostname()) },
       (r: any) => resolve(r?.data || null)
     );
   });
@@ -626,12 +636,36 @@ function showRecordDetail(recordId: string): void {
     fontFamily: 'inherit', flexShrink: '0', whiteSpace: 'nowrap', display: 'none',
   });
 
+  // Toggle the field API-name chips on the live record page from here.
+  const apiBtn = document.createElement('button');
+  Object.assign(apiBtn.style, {
+    fontSize: '12px', fontWeight: '700', padding: '8px 12px', borderRadius: '8px',
+    cursor: 'pointer', fontFamily: 'inherit', flexShrink: '0', whiteSpace: 'nowrap',
+  });
+  apiBtn.title = 'Show field API names on the record page';
+  const paintApiBtn = () => {
+    const on = toolsState.showFieldApi;
+    apiBtn.textContent = 'Show API Name';
+    apiBtn.style.background = on ? 'rgba(37,99,235,0.12)' : 'transparent';
+    apiBtn.style.color = on ? C.accent : C.textPrimary;
+    apiBtn.style.border = `1.5px solid ${on ? C.accent : C.border}`;
+  };
+  apiBtn.addEventListener('click', () => {
+    toolsState.showFieldApi = !toolsState.showFieldApi;
+    saveToolsState();
+    applyShowFieldApi(toolsState.showFieldApi);
+    paintApiBtn();
+    flashToast(`Field API names: ${toolsState.showFieldApi ? 'On' : 'Off'}`);
+  });
+  paintApiBtn();
+
   const closeBtn = document.createElement('button');
   Object.assign(closeBtn.style, { padding: '8px', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '8px', flexShrink: '0', display: 'flex' });
   closeBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${C.textMuted}" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
   closeBtn.addEventListener('click', close);
 
   header.appendChild(titleWrap);
+  header.appendChild(apiBtn);
   header.appendChild(objectBtn);
   header.appendChild(closeBtn);
   modal.appendChild(header);
@@ -1300,6 +1334,670 @@ function renderOrgLimitsInto(host: HTMLElement, isDark: boolean, onBack: () => v
   });
 }
 
+// ─── Data Export (SOQL → table → CSV) ────────────────────────────────────────
+
+// Saved queries + run history (persisted).
+const SOQL_SAVED_KEY = 'sf_soql_saved';
+const SOQL_HISTORY_KEY = 'sf_soql_history';
+let soqlSaved: { name: string; query: string }[] = [];
+let soqlHistory: { query: string; ts: number }[] = [];
+function loadSoqlStore(): void {
+  (globalThis as any).chrome?.storage?.local?.get([SOQL_SAVED_KEY, SOQL_HISTORY_KEY], (res: any) => {
+    soqlSaved = Array.isArray(res?.[SOQL_SAVED_KEY]) ? res[SOQL_SAVED_KEY] : [];
+    soqlHistory = Array.isArray(res?.[SOQL_HISTORY_KEY]) ? res[SOQL_HISTORY_KEY] : [];
+  });
+}
+function persistSoqlSaved(): void { (globalThis as any).chrome?.storage?.local?.set({ [SOQL_SAVED_KEY]: soqlSaved }); }
+function persistSoqlHistory(): void { (globalThis as any).chrome?.storage?.local?.set({ [SOQL_HISTORY_KEY]: soqlHistory }); }
+function addSoqlHistory(q: string): void {
+  q = q.trim(); if (!q) return;
+  soqlHistory = soqlHistory.filter(h => h.query !== q);
+  soqlHistory.unshift({ query: q, ts: Date.now() });
+  if (soqlHistory.length > 30) soqlHistory.length = 30;
+  persistSoqlHistory();
+}
+loadSoqlStore();
+
+// Data Export preferences (dedicated settings page).
+interface ExportSettings { separator: ',' | ';' | '\t'; wrap: boolean; hideRelations: boolean; defaultTooling: boolean; maxRows: number; }
+const EXPORT_SETTINGS_KEY = 'sf_export_settings';
+let exportSettings: ExportSettings = { separator: ',', wrap: false, hideRelations: false, defaultTooling: false, maxRows: 1000 };
+function loadExportSettings(): void {
+  (globalThis as any).chrome?.storage?.local?.get([EXPORT_SETTINGS_KEY], (res: any) => {
+    if (res?.[EXPORT_SETTINGS_KEY]) exportSettings = { ...exportSettings, ...res[EXPORT_SETTINGS_KEY] };
+  });
+}
+function saveExportSettings(): void { (globalThis as any).chrome?.storage?.local?.set({ [EXPORT_SETTINGS_KEY]: exportSettings }); }
+loadExportSettings();
+
+// Object + field metadata caches for autocomplete.
+let soqlObjects: { name: string; label: string }[] | null = null;
+const soqlFieldCache: Record<string, { name: string; label: string; type: string }[]> = {};
+function getSoqlObjects(cb: (list: { name: string; label: string }[]) => void): void {
+  if (soqlObjects) { cb(soqlObjects); return; }
+  getSfCredentials().then((creds: any) => {
+    if (!creds?.instanceUrl || !creds?.sessionId) { cb([]); return; }
+    (globalThis as any).chrome.runtime.sendMessage(
+      { type: 'GET_ALL_OBJECTS', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+      (r: any) => {
+        soqlObjects = (r?.success && r.data) ? r.data.map((o: any) => ({ name: o.QualifiedApiName, label: o.Label || o.QualifiedApiName })) : [];
+        cb(soqlObjects || []);
+      }
+    );
+  });
+}
+function getSoqlFields(object: string, cb: (fields: { name: string; label: string; type: string }[]) => void): void {
+  const key = object.toLowerCase();
+  if (soqlFieldCache[key]) { cb(soqlFieldCache[key]); return; }
+  getSfCredentials().then((creds: any) => {
+    if (!creds?.instanceUrl || !creds?.sessionId) { cb([]); return; }
+    (globalThis as any).chrome.runtime.sendMessage(
+      { type: 'GET_OBJECT_FIELDS', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, objectApiName: object },
+      (r: any) => { const fields = (r?.success && r.data) ? r.data : []; soqlFieldCache[key] = fields; cb(fields); }
+    );
+  });
+}
+
+// Flatten SOQL records into { columns, rows }, expanding parent relationships
+// into dotted columns (e.g. Owner.Name) and JSON-stringifying anything else.
+function flattenSoqlRecords(records: any[]): { columns: string[]; rows: Record<string, any>[] } {
+  const columns: string[] = [];
+  const seen = new Set<string>();
+  const addCol = (c: string) => { if (!seen.has(c)) { seen.add(c); columns.push(c); } };
+  const rows = records.map((rec) => {
+    const flat: Record<string, any> = {};
+    const walk = (obj: any, prefix: string) => {
+      Object.keys(obj).forEach((k) => {
+        if (k === 'attributes') return;
+        const key = prefix ? `${prefix}.${k}` : k;
+        const v = obj[k];
+        if (v && typeof v === 'object' && !Array.isArray(v) && v.attributes) {
+          walk(v, key);
+        } else if (v && typeof v === 'object') {
+          flat[key] = JSON.stringify(v); addCol(key);
+        } else {
+          flat[key] = v ?? ''; addCol(key);
+        }
+      });
+    };
+    walk(rec, '');
+    return flat;
+  });
+  return { columns, rows };
+}
+
+function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void, onSettings: () => void): void {
+  host.innerHTML = '';
+  const C = {
+    border: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.15)',
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    surface: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+    headerBg: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+    menuBg: isDark ? '#1e293b' : '#ffffff',
+    hover: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
+    inputBg: isDark ? 'rgba(255,255,255,0.06)' : '#ffffff',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
+    borderStrong: isDark ? 'rgba(148,163,184,0.35)' : 'rgba(31,41,55,0.22)',
+    zebra: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.025)',
+    tabActive: isDark ? 'rgba(255,255,255,0.08)' : '#ffffff',
+    accent: '#2563eb',
+  };
+
+  // Layout: fixed header + editor/controls; only the table area scrolls.
+  const root = document.createElement('div');
+  Object.assign(root.style, { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column' });
+  host.appendChild(root);
+  root.appendChild(toolBackHeader(isDark, '📤  Export Data', onBack));
+
+  // Query tabs — each keeps its own query + results.
+  const DEFAULT_QUERY = 'SELECT Id, Name, CreatedDate FROM Account ORDER BY CreatedDate DESC LIMIT 50';
+  type ExportTab = { name: string; query: string; cols: string[]; rows: Record<string, any>[]; status: string; tooling: boolean; queryAll: boolean };
+  const tabs: ExportTab[] = [{ name: 'Query 1', query: DEFAULT_QUERY, cols: [], rows: [], status: '', tooling: exportSettings.defaultTooling, queryAll: false }];
+  let active = 0;
+  const tabStrip = document.createElement('div');
+  Object.assign(tabStrip.style, { flexShrink: '0', display: 'flex', alignItems: 'center', gap: '4px', padding: '10px 24px 0', overflowX: 'auto' });
+  root.appendChild(tabStrip);
+
+  const top = document.createElement('div');
+  Object.assign(top.style, { flexShrink: '0', padding: '4px 24px 14px', display: 'flex', flexDirection: 'column', gap: '10px', borderBottom: `1px solid ${C.divider}` });
+  root.appendChild(top);
+
+  // Query editor (wrapped so the autocomplete box can anchor to it).
+  const editorWrap = document.createElement('div');
+  editorWrap.style.position = 'relative';
+  const ta = document.createElement('textarea');
+  ta.value = 'SELECT Id, Name, CreatedDate FROM Account ORDER BY CreatedDate DESC LIMIT 50';
+  ta.spellcheck = false;
+  Object.assign(ta.style, {
+    width: '100%', minHeight: '76px', resize: 'vertical', boxSizing: 'border-box', padding: '10px 12px',
+    fontFamily: 'Fira Code, monospace', fontSize: '13px', borderRadius: '10px',
+    border: `1.5px solid ${C.borderStrong}`, background: C.inputBg, color: C.textPrimary, outline: 'none',
+    lineHeight: '1.5', transition: 'border-color 0.15s, box-shadow 0.15s',
+  });
+  // Highlight the editor border on focus.
+  ta.addEventListener('focus', () => { ta.style.borderColor = C.accent; ta.style.boxShadow = `0 0 0 3px ${isDark ? 'rgba(37,99,235,0.35)' : 'rgba(37,99,235,0.18)'}`; });
+  ta.addEventListener('blur', () => { ta.style.borderColor = C.borderStrong; ta.style.boxShadow = 'none'; });
+  editorWrap.appendChild(ta);
+
+  const suggBox = document.createElement('div');
+  Object.assign(suggBox.style, {
+    position: 'absolute', left: '0', top: '100%', marginTop: '2px', width: '100%', maxHeight: '240px', overflowY: 'auto',
+    background: C.menuBg, border: `1px solid ${C.border}`, borderRadius: '10px', boxShadow: '0 14px 36px rgba(0,0,0,0.3)',
+    zIndex: '40', display: 'none', padding: '4px',
+  });
+  editorWrap.appendChild(suggBox);
+  top.appendChild(editorWrap);
+
+  // Controls
+  const controls = document.createElement('div');
+  Object.assign(controls.style, { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' });
+  const mkBtn = (label: string, primary?: boolean) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    Object.assign(b.style, {
+      fontSize: '13px', fontWeight: '700', padding: '8px 14px', borderRadius: '8px', cursor: 'pointer', fontFamily: 'inherit',
+      border: primary ? 'none' : `1px solid ${C.borderStrong}`, background: primary ? C.accent : 'transparent', color: primary ? '#fff' : C.textPrimary,
+    });
+    return b;
+  };
+  const mkCheck = (text: string) => {
+    const l = document.createElement('label');
+    Object.assign(l.style, { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: C.textMuted, cursor: 'pointer', fontWeight: '600' });
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.style.cursor = 'pointer';
+    l.appendChild(cb); l.appendChild(document.createTextNode(text));
+    return { l, cb };
+  };
+
+  const runBtn = mkBtn('Run', true);
+  const planBtn = mkBtn('Query Plan');
+  const saveBtn = mkBtn('Save');
+  const histBtn = mkBtn('Saved / History ▾');
+  const copyMenuBtn = mkBtn('Copy ▾');
+  const csvBtn = mkBtn('Download CSV');
+  const gearBtn = mkBtn('⚙'); gearBtn.title = 'Export settings';
+  Object.assign(gearBtn.style, { fontSize: '18px', lineHeight: '1', padding: '7px 12px' });
+  gearBtn.addEventListener('click', onSettings);
+  copyMenuBtn.disabled = csvBtn.disabled = true;
+  copyMenuBtn.style.opacity = csvBtn.style.opacity = '0.5';
+
+  const tooling = mkCheck('Tooling API');
+  const qall = mkCheck('Query All (deleted)');
+  tooling.cb.checked = tabs[active].tooling;
+
+  const filterInput = document.createElement('input');
+  filterInput.type = 'text'; filterInput.placeholder = 'Filter results…'; filterInput.spellcheck = false;
+  Object.assign(filterInput.style, { padding: '7px 10px', fontSize: '12px', borderRadius: '8px', border: `1px solid ${C.borderStrong}`, background: C.inputBg, color: C.textPrimary, outline: 'none', width: '150px' });
+
+  const status = document.createElement('span');
+  Object.assign(status.style, { fontSize: '12px', color: C.textMuted, marginLeft: 'auto' });
+
+  [runBtn, planBtn, saveBtn, histBtn, tooling.l, qall.l, copyMenuBtn, csvBtn, gearBtn, filterInput, status].forEach((el) => controls.appendChild(el));
+  top.appendChild(controls);
+
+  // Table scroll area — the ONLY part that scrolls (vertically & horizontally).
+  const tableScroll = document.createElement('div');
+  Object.assign(tableScroll.style, { flex: '1', minHeight: '0', overflow: 'auto', padding: '0' });
+  root.appendChild(tableScroll);
+
+  let cols: string[] = tabs[0].cols;
+  let rows: Record<string, any>[] = tabs[0].rows;
+  let filterText = '';
+  const displayRows = () => {
+    if (!filterText) return rows;
+    const w = filterText.toLowerCase();
+    return rows.filter((r) => cols.some((c) => String(r[c] ?? '').toLowerCase().includes(w)));
+  };
+  const setExportEnabled = (on: boolean) => {
+    copyMenuBtn.disabled = csvBtn.disabled = !on;
+    copyMenuBtn.style.opacity = csvBtn.style.opacity = on ? '1' : '0.5';
+  };
+
+  const visibleCols = () => (exportSettings.hideRelations ? cols.filter((c) => !c.includes('.')) : cols);
+
+  const renderTable = () => {
+    tableScroll.innerHTML = '';
+    if (rows.length === 0) return;
+    const dr = displayRows();
+    if (dr.length === 0) { const n = document.createElement('div'); n.textContent = 'No rows match the filter.'; Object.assign(n.style, { padding: '16px 24px', fontSize: '13px', color: C.textFaint }); tableScroll.appendChild(n); return; }
+    const vcols = visibleCols();
+    const MAX_DOM = Math.max(50, exportSettings.maxRows || 1000);
+    const wrap = exportSettings.wrap;
+    const table = document.createElement('table');
+    Object.assign(table.style, { borderCollapse: 'collapse', fontSize: '12px', fontFamily: 'Fira Code, monospace', borderTop: `1px solid ${C.borderStrong}` });
+    const thead = document.createElement('thead');
+    const htr = document.createElement('tr');
+    vcols.forEach((c) => {
+      const th = document.createElement('th');
+      th.textContent = c;
+      Object.assign(th.style, { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: C.headerBg, color: C.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C.borderStrong}` });
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    dr.slice(0, MAX_DOM).forEach((r, ri) => {
+      const tr = document.createElement('tr');
+      if (ri % 2 === 1) tr.style.background = C.zebra;
+      vcols.forEach((c) => {
+        const td = document.createElement('td');
+        td.textContent = r[c] === undefined || r[c] === null ? '' : String(r[c]);
+        Object.assign(td.style, { padding: '6px 12px', color: C.textPrimary, border: `1px solid ${C.divider}`, verticalAlign: 'top',
+          ...(wrap ? { whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: '420px' } : { whiteSpace: 'nowrap', maxWidth: '380px', overflow: 'hidden', textOverflow: 'ellipsis' }) });
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableScroll.appendChild(table);
+    if (dr.length > MAX_DOM) {
+      const note = document.createElement('div');
+      note.textContent = `Showing first ${MAX_DOM} of ${dr.length} rows — export to get them all.`;
+      Object.assign(note.style, { padding: '10px 14px', fontSize: '12px', color: C.textFaint });
+      tableScroll.appendChild(note);
+    }
+  };
+
+  // ── Export (operates on the filtered/visible rows) ──
+  const csvCell = (v: any, sep: string) => { const s = v === undefined || v === null ? '' : String(v); const re = sep === '\t' ? /[\t"\n]/ : /[",\n;]/; return re.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const buildDelimited = (sep: string) => {
+    const dr = displayRows();
+    const vc = visibleCols();
+    const head = vc.map((c) => csvCell(c, sep)).join(sep);
+    const body = dr.map((r) => vc.map((c) => csvCell(r[c], sep)).join(sep)).join('\n');
+    return head + '\n' + body;
+  };
+  const buildJson = () => {
+    const vc = visibleCols();
+    return JSON.stringify(displayRows().map((r) => { const o: Record<string, any> = {}; vc.forEach((c) => { o[c] = r[c]; }); return o; }), null, 2);
+  };
+
+  csvBtn.addEventListener('click', () => {
+    const blob = new Blob(['﻿' + buildDelimited(exportSettings.separator)], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `export_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  });
+
+  copyMenuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('sf-copy-menu')?.remove();
+    const menu = document.createElement('div');
+    menu.id = 'sf-copy-menu';
+    Object.assign(menu.style, { position: 'fixed', minWidth: '180px', background: C.menuBg, color: C.textPrimary, border: `1px solid ${C.borderStrong}`, borderRadius: '10px', boxShadow: '0 14px 36px rgba(0,0,0,0.3)', padding: '6px', zIndex: '2147483649', fontFamily: 'Inter, system-ui, sans-serif' });
+    const closeM = () => { menu.remove(); document.removeEventListener('click', oo, true); };
+    const oo = (ev: MouseEvent) => { if (!menu.contains(ev.target as Node) && ev.target !== copyMenuBtn) closeM(); };
+    const opt = (label: string, fn: () => string) => {
+      const r = document.createElement('button');
+      r.textContent = label;
+      Object.assign(r.style, { display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', background: 'transparent', border: 'none', borderRadius: '7px', cursor: 'pointer', color: C.textPrimary, fontSize: '13px', fontWeight: '600', fontFamily: 'inherit' });
+      r.addEventListener('mouseover', () => { r.style.background = C.hover; });
+      r.addEventListener('mouseout', () => { r.style.background = 'transparent'; });
+      r.addEventListener('click', () => { navigator.clipboard?.writeText(fn()).then(() => flashToast('Copied to clipboard')).catch(() => {}); closeM(); });
+      menu.appendChild(r);
+    };
+    opt('Copy as CSV', () => buildDelimited(exportSettings.separator));
+    opt('Copy as Excel (TSV)', () => buildDelimited('\t'));
+    opt('Copy as JSON', () => buildJson());
+    document.body.appendChild(menu);
+    const rect = copyMenuBtn.getBoundingClientRect();
+    let mtop = rect.bottom + 6; const mh = menu.offsetHeight;
+    if (mtop + mh > window.innerHeight - 8) mtop = Math.max(8, rect.top - mh - 6);
+    menu.style.top = `${mtop}px`; menu.style.left = `${Math.max(8, rect.left)}px`;
+    setTimeout(() => document.addEventListener('click', oo, true), 0);
+  });
+
+  filterInput.addEventListener('input', () => { filterText = filterInput.value.trim(); renderTable(); });
+
+  const showError = (msg: string) => { tableScroll.innerHTML = ''; const e = document.createElement('div'); e.textContent = msg; Object.assign(e.style, { padding: '14px 24px', color: '#ef4444', fontSize: '13px', fontWeight: '600' }); tableScroll.appendChild(e); };
+
+  const run = () => {
+    const query = ta.value.trim();
+    if (!query) return;
+    tabs[active].query = query; tabs[active].tooling = tooling.cb.checked; tabs[active].queryAll = qall.cb.checked;
+    status.textContent = 'Running…'; status.style.color = C.textMuted;
+    runBtn.disabled = true; runBtn.style.opacity = '0.6';
+    setExportEnabled(false);
+    const t0 = performance.now();
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { status.textContent = 'No session'; runBtn.disabled = false; runBtn.style.opacity = '1'; return; }
+      (globalThis as any).chrome.runtime.sendMessage(
+        { type: 'RUN_SOQL', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query, useTooling: tooling.cb.checked, queryAll: qall.cb.checked },
+        (resp: any) => {
+          runBtn.disabled = false; runBtn.style.opacity = '1';
+          if (!resp?.success) { status.textContent = ''; showError(resp?.error || 'Query failed.'); return; }
+          addSoqlHistory(query);
+          const recs = resp.data.records || [];
+          const flat = flattenSoqlRecords(recs);
+          cols = flat.columns; rows = flat.rows;
+          tabs[active].cols = cols; tabs[active].rows = rows;
+          const ms = Math.round(performance.now() - t0);
+          const capped = resp.data.done === false;
+          status.textContent = `${recs.length.toLocaleString()} row${recs.length === 1 ? '' : 's'} · ${ms}ms${capped ? ' (capped 50k)' : ''}`;
+          tabs[active].status = status.textContent;
+          setExportEnabled(recs.length > 0);
+          renderTable();
+        }
+      );
+    });
+  };
+  runBtn.addEventListener('click', run);
+
+  // ── Query Plan ──
+  planBtn.addEventListener('click', () => {
+    const query = ta.value.trim(); if (!query) return;
+    status.textContent = 'Planning…';
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { status.textContent = 'No session'; return; }
+      (globalThis as any).chrome.runtime.sendMessage(
+        { type: 'GET_QUERY_PLAN', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query, useTooling: tooling.cb.checked },
+        (resp: any) => {
+          if (!resp?.success) { status.textContent = ''; showError(resp?.error || 'Query Plan failed.'); return; }
+          status.textContent = 'Query plan';
+          const plans = resp.data.plans || [];
+          tableScroll.innerHTML = '';
+          if (plans.length === 0) { showError('No plan returned.'); return; }
+          const cols2 = ['Leading operation', 'Cost', 'Cardinality', 'sObject cardinality', 'Fields'];
+          const table = document.createElement('table');
+          Object.assign(table.style, { borderCollapse: 'collapse', fontSize: '12px', fontFamily: 'Fira Code, monospace', borderTop: `1px solid ${C.borderStrong}` });
+          const htr = document.createElement('tr');
+          cols2.forEach((c) => { const th = document.createElement('th'); th.textContent = c; Object.assign(th.style, { textAlign: 'left', padding: '8px 12px', background: C.headerBg, color: C.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C.borderStrong}` }); htr.appendChild(th); });
+          table.appendChild(htr);
+          plans.forEach((p: any) => {
+            const tr = document.createElement('tr');
+            [p.leadingOperationType, (p.relativeCost ?? '').toString(), (p.cardinality ?? '').toString(), (p.sobjectCardinality ?? '').toString(), (p.fields || []).join(', ')].forEach((v) => {
+              const td = document.createElement('td'); td.textContent = String(v); Object.assign(td.style, { padding: '6px 12px', color: C.textPrimary, border: `1px solid ${C.divider}`, maxWidth: '360px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }); tr.appendChild(td);
+            });
+            table.appendChild(tr);
+          });
+          tableScroll.appendChild(table);
+        }
+      );
+    });
+  });
+
+  // ── Save + Saved/History dropdown ──
+  saveBtn.addEventListener('click', () => {
+    const q = ta.value.trim(); if (!q) return;
+    const name = window.prompt('Save query as:', q.replace(/\s+/g, ' ').slice(0, 40));
+    if (!name) return;
+    soqlSaved = soqlSaved.filter((s) => s.name !== name);
+    soqlSaved.unshift({ name, query: q });
+    if (soqlSaved.length > 50) soqlSaved.length = 50;
+    persistSoqlSaved();
+    flashToast('Query saved');
+  });
+
+  histBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('sf-soql-menu')?.remove();
+    const menu = document.createElement('div');
+    menu.id = 'sf-soql-menu';
+    Object.assign(menu.style, { position: 'fixed', minWidth: '320px', maxWidth: '480px', maxHeight: '360px', overflowY: 'auto', background: C.menuBg, color: C.textPrimary, border: `1px solid ${C.borderStrong}`, borderRadius: '12px', boxShadow: '0 18px 45px rgba(0,0,0,0.35)', padding: '6px', zIndex: '2147483649', fontFamily: 'Inter, system-ui, sans-serif' });
+    const closeMenu = () => { menu.remove(); document.removeEventListener('click', onOut, true); document.removeEventListener('keydown', onEsc, true); };
+    const onOut = (ev: MouseEvent) => { if (!menu.contains(ev.target as Node) && ev.target !== histBtn) closeMenu(); };
+    const onEsc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') closeMenu(); };
+    const section = (title: string) => { const s = document.createElement('div'); s.textContent = title; Object.assign(s.style, { fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', color: C.textFaint, padding: '8px 10px 4px' }); menu.appendChild(s); };
+    const item = (primary: string, sub: string, q: string) => {
+      const row = document.createElement('button');
+      Object.assign(row.style, { display: 'block', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderRadius: '8px', cursor: 'pointer', padding: '8px 10px', fontFamily: 'inherit', color: C.textPrimary });
+      row.innerHTML = `<div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${primary.replace(/</g, '&lt;')}</div><div style="font-size:11px;color:${C.textMuted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:Fira Code,monospace">${sub.replace(/</g, '&lt;')}</div>`;
+      row.addEventListener('mouseover', () => { row.style.background = C.hover; });
+      row.addEventListener('mouseout', () => { row.style.background = 'transparent'; });
+      row.addEventListener('click', () => { ta.value = q; closeMenu(); ta.focus(); });
+      menu.appendChild(row);
+    };
+    if (soqlSaved.length === 0 && soqlHistory.length === 0) { const empty = document.createElement('div'); empty.textContent = 'No saved queries or history yet.'; Object.assign(empty.style, { padding: '14px', fontSize: '13px', color: C.textMuted }); menu.appendChild(empty); }
+    if (soqlSaved.length) { section('★ Saved'); soqlSaved.forEach((s) => item(s.name, s.query, s.query)); }
+    if (soqlHistory.length) { section('Recent'); soqlHistory.forEach((h) => item(h.query.replace(/\s+/g, ' ').slice(0, 60), h.query, h.query)); }
+    document.body.appendChild(menu);
+    const rect = histBtn.getBoundingClientRect(); const mh = menu.offsetHeight;
+    let mtop = rect.bottom + 6; if (mtop + mh > window.innerHeight - 8) mtop = Math.max(8, rect.top - mh - 6);
+    menu.style.top = `${mtop}px`; menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+    setTimeout(() => { document.addEventListener('click', onOut, true); document.addEventListener('keydown', onEsc, true); }, 0);
+  });
+
+  // ── Query tabs ──
+  const switchTab = (i: number) => {
+    tabs[active].query = ta.value; tabs[active].tooling = tooling.cb.checked; tabs[active].queryAll = qall.cb.checked;
+    active = i;
+    const t = tabs[i];
+    ta.value = t.query; tooling.cb.checked = t.tooling; qall.cb.checked = t.queryAll;
+    cols = t.cols; rows = t.rows; filterText = ''; filterInput.value = '';
+    status.textContent = t.status; setExportEnabled(rows.length > 0);
+    renderTable(); renderTabStrip();
+  };
+  const addTab = () => { tabs.push({ name: `Query ${tabs.length + 1}`, query: DEFAULT_QUERY, cols: [], rows: [], status: '', tooling: exportSettings.defaultTooling, queryAll: false }); switchTab(tabs.length - 1); };
+  const closeTab = (i: number) => { if (tabs.length <= 1) return; tabs.splice(i, 1); if (active >= tabs.length) active = tabs.length - 1; if (active > i) active -= 1; const t = tabs[active]; ta.value = t.query; tooling.cb.checked = t.tooling; qall.cb.checked = t.queryAll; cols = t.cols; rows = t.rows; status.textContent = t.status; setExportEnabled(rows.length > 0); renderTable(); renderTabStrip(); };
+  function renderTabStrip() {
+    tabStrip.innerHTML = '';
+    tabs.forEach((t, i) => {
+      const tb = document.createElement('div');
+      Object.assign(tb.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px', borderRadius: '8px 8px 0 0', cursor: 'pointer', fontSize: '12px', fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${i === active ? C.borderStrong : 'transparent'}`, borderBottom: 'none', background: i === active ? C.tabActive : 'transparent', color: i === active ? C.textPrimary : C.textMuted });
+      const label = document.createElement('span'); label.textContent = t.name; tb.appendChild(label);
+      tb.addEventListener('click', () => { if (i !== active) switchTab(i); });
+      if (tabs.length > 1) {
+        const x = document.createElement('span'); x.textContent = '×'; Object.assign(x.style, { fontSize: '14px', color: C.textFaint });
+        x.addEventListener('click', (ev) => { ev.stopPropagation(); closeTab(i); });
+        tb.appendChild(x);
+      }
+      tabStrip.appendChild(tb);
+    });
+    const add = document.createElement('button');
+    add.textContent = '+'; add.title = 'New query tab';
+    Object.assign(add.style, { padding: '4px 10px', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '16px', fontWeight: '700', color: C.textMuted, fontFamily: 'inherit' });
+    add.addEventListener('click', addTab);
+    tabStrip.appendChild(add);
+  }
+
+  ta.value = tabs[0].query;
+  renderTabStrip();
+
+  // ── Autocomplete (objects / fields / functions) ──
+  const SOQL_FUNCS = [
+    { insert: 'FIELDS(ALL)', sub: 'all fields' },
+    { insert: 'FIELDS(STANDARD)', sub: 'standard fields' },
+    { insert: 'FIELDS(CUSTOM)', sub: 'custom fields' },
+    { insert: 'COUNT()', sub: 'aggregate' },
+    { insert: 'COUNT_DISTINCT()', sub: 'aggregate' },
+    { insert: 'SUM()', sub: 'aggregate' },
+    { insert: 'AVG()', sub: 'aggregate' },
+    { insert: 'MIN()', sub: 'aggregate' },
+    { insert: 'MAX()', sub: 'aggregate' },
+  ];
+  type Sugg = { insert: string; label: string; sub: string; kind: 'object' | 'field' | 'func' };
+  let suggItems: Sugg[] = [];
+  let selIdx = 0;
+  let suggCtx: { word: string; wordStart: number; clause: string } | null = null;
+
+  const parseCtx = (value: string, caret: number) => {
+    const before = value.slice(0, caret);
+    const word = (before.match(/[A-Za-z0-9_]*$/) || [''])[0];
+    const wordStart = caret - word.length;
+    const objM = value.match(/FROM\s+([A-Za-z0-9_]+)/i);
+    const object = objM ? objM[1] : '';
+    const kwAt = (kw: string) => { const re = new RegExp(`\\b${kw}\\b`, 'gi'); let m: RegExpExecArray | null, idx = -1; while ((m = re.exec(before))) idx = m.index; return idx; };
+    const pos: [string, number][] = [['select', kwAt('SELECT')], ['from', kwAt('FROM')], ['where', kwAt('WHERE')], ['having', kwAt('HAVING')], ['order', kwAt('ORDER BY')], ['group', kwAt('GROUP BY')]];
+    let last: [string, number] = ['none', -1];
+    pos.forEach((p) => { if (p[1] > last[1]) last = p; });
+    let clause: string;
+    if (last[0] === 'select') clause = 'selectList';
+    else if (last[0] === 'from') clause = /FROM\s+[A-Za-z0-9_]*$/i.test(before) ? 'object' : 'where';
+    else if (last[0] === 'where' || last[0] === 'having') clause = 'where';
+    else if (last[0] === 'order' || last[0] === 'group') clause = 'orderGroup';
+    else clause = 'none';
+    return { word, wordStart, object, clause };
+  };
+
+  const rankFilter = (list: { name: string; label?: string }[], word: string) => {
+    const w = word.toLowerCase();
+    return list
+      .map((o) => {
+        const n = o.name.toLowerCase(), l = (o.label || '').toLowerCase();
+        let r = 99;
+        if (!w) r = 0;
+        else if (n.startsWith(w)) r = 0;
+        else if (l.startsWith(w)) r = 1;
+        else if (n.includes(w)) r = 2;
+        else if (l.includes(w)) r = 3;
+        return { o, r };
+      })
+      .filter((x) => x.r < 99)
+      .sort((a, b) => a.r - b.r || a.o.name.localeCompare(b.o.name))
+      .slice(0, 12)
+      .map((x) => x.o);
+  };
+  const filterFuncs = (word: string): Sugg[] => {
+    const w = word.toLowerCase();
+    return SOQL_FUNCS
+      .filter((f) => !w || f.insert.toLowerCase().startsWith(w) || f.insert.toLowerCase().includes(w))
+      .map((f) => ({ insert: f.insert, label: f.insert, sub: f.sub, kind: 'func' as const }));
+  };
+
+  let suggRows: HTMLElement[] = [];
+  const highlight = () => { suggRows.forEach((r, i) => { r.style.background = i === selIdx ? C.hover : 'transparent'; }); };
+  const paintSugg = () => {
+    suggBox.innerHTML = '';
+    suggRows = [];
+    suggItems.forEach((it, i) => {
+      const row = document.createElement('div');
+      Object.assign(row.style, { padding: '7px 10px', borderRadius: '7px', cursor: 'pointer', background: i === selIdx ? C.hover : 'transparent' });
+      const tag = it.kind === 'func' ? 'ƒ' : it.kind === 'object' ? '▦' : '◇';
+      row.innerHTML = `<span style="color:${C.textFaint};font-size:11px;margin-right:6px">${tag}</span><span style="font-family:Fira Code,monospace;font-size:13px;font-weight:600;color:${C.textPrimary}">${it.label}</span> <span style="font-size:11px;color:${C.textFaint}">${it.sub}</span>`;
+      // mousedown (not click) + preventDefault keeps the textarea focused so the insert lands.
+      row.addEventListener('mousedown', (ev) => { ev.preventDefault(); selIdx = i; insertSugg(); });
+      row.addEventListener('mouseover', () => { selIdx = i; highlight(); });
+      suggBox.appendChild(row);
+      suggRows.push(row);
+    });
+  };
+  const hideSugg = () => { suggBox.style.display = 'none'; suggItems = []; suggCtx = null; };
+  const showSugg = (items: Sugg[], ctx: { word: string; wordStart: number; clause: string }) => {
+    if (items.length === 0) { hideSugg(); return; }
+    suggItems = items; suggCtx = ctx; selIdx = 0; suggBox.style.display = 'block'; paintSugg();
+  };
+  const insertSugg = () => {
+    const it = suggItems[selIdx]; if (!it || !suggCtx) return;
+    const caret = ta.selectionStart;
+    const v = ta.value;
+    const insert = it.insert;
+    let suffix = '';
+    let caretOffset: number | null = null;
+    if (it.kind === 'func') {
+      if (insert.endsWith('()')) caretOffset = insert.length - 1; // caret inside the parens
+    } else if (it.kind === 'object') {
+      suffix = ' ';
+    } else {
+      // Field: add a comma so the next field can be typed — but not right before FROM
+      // or where a comma already follows.
+      if (suggCtx.clause === 'where') {
+        suffix = ' ';
+      } else {
+        const after = v.slice(caret).replace(/^\s*/, '');
+        if (after.startsWith(',')) suffix = '';
+        else if (/^from\b/i.test(after)) suffix = ' ';
+        else suffix = ', ';
+      }
+    }
+    ta.value = v.slice(0, suggCtx.wordStart) + insert + suffix + v.slice(caret);
+    const pos = caretOffset != null ? suggCtx.wordStart + caretOffset : suggCtx.wordStart + insert.length + suffix.length;
+    ta.setSelectionRange(pos, pos);
+    hideSugg(); ta.focus(); updateSugg();
+  };
+
+  const updateSugg = () => {
+    const caret = ta.selectionStart;
+    const ctx = parseCtx(ta.value, caret);
+    const setCtx = { word: ctx.word, wordStart: ctx.wordStart, clause: ctx.clause };
+    if (ctx.clause === 'object') {
+      getSoqlObjects((list) => showSugg(rankFilter(list, ctx.word).map((o: any) => ({ insert: o.name, label: o.name, sub: o.label, kind: 'object' as const })), setCtx));
+    } else if (ctx.clause === 'selectList') {
+      const funcItems = filterFuncs(ctx.word);
+      if (!ctx.object) { showSugg(funcItems, setCtx); return; }
+      getSoqlFields(ctx.object, (fields) => {
+        const fieldItems: Sugg[] = rankFilter(fields, ctx.word).map((f: any) => ({ insert: f.name, label: f.name, sub: `${f.label} · ${f.type}`, kind: 'field' as const }));
+        showSugg([...funcItems, ...fieldItems].slice(0, 14), setCtx);
+      });
+    } else if ((ctx.clause === 'where' || ctx.clause === 'orderGroup') && ctx.object) {
+      getSoqlFields(ctx.object, (fields) => showSugg(rankFilter(fields, ctx.word).map((f: any) => ({ insert: f.name, label: f.name, sub: `${f.label} · ${f.type}`, kind: 'field' as const })), setCtx));
+    } else {
+      hideSugg();
+    }
+  };
+
+  ta.addEventListener('input', updateSugg);
+  ta.addEventListener('click', updateSugg);
+  ta.addEventListener('blur', () => setTimeout(hideSugg, 150));
+  ta.addEventListener('keydown', (e) => {
+    const open = suggBox.style.display === 'block' && suggItems.length > 0;
+    if (open) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); selIdx = Math.min(selIdx + 1, suggItems.length - 1); highlight(); suggRows[selIdx]?.scrollIntoView({ block: 'nearest' }); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); selIdx = Math.max(selIdx - 1, 0); highlight(); suggRows[selIdx]?.scrollIntoView({ block: 'nearest' }); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertSugg(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hideSugg(); return; }
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+  });
+
+  // Warm the object cache for snappy first suggestions.
+  getSoqlObjects(() => {});
+}
+
+function renderExportSettingsInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
+  host.innerHTML = '';
+  const C = {
+    border: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(31,41,55,0.2)',
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    inputBg: isDark ? 'rgba(255,255,255,0.06)' : '#ffffff',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    accent: '#2563eb',
+  };
+  host.appendChild(toolBackHeader(isDark, '⚙  Export Settings', onBack));
+  const body = document.createElement('div');
+  Object.assign(body.style, { padding: '8px 28px 24px', display: 'flex', flexDirection: 'column', gap: '4px' });
+  host.appendChild(body);
+
+  const row = (title: string, hint: string, control: HTMLElement) => {
+    const r = document.createElement('div');
+    Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 0', borderBottom: `1px solid ${C.divider}` });
+    const txt = document.createElement('div'); txt.style.flex = '1';
+    const t = document.createElement('div'); t.textContent = title; Object.assign(t.style, { fontSize: '14px', fontWeight: '700', color: C.textPrimary });
+    const h = document.createElement('div'); h.textContent = hint; Object.assign(h.style, { fontSize: '12px', color: C.textMuted, marginTop: '2px' });
+    txt.appendChild(t); txt.appendChild(h);
+    control.style.flexShrink = '0';
+    r.appendChild(txt); r.appendChild(control);
+    body.appendChild(r);
+  };
+  const mkToggle = (get: () => boolean, set: (v: boolean) => void) => {
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = get();
+    Object.assign(cb.style, { width: '18px', height: '18px', cursor: 'pointer', accentColor: C.accent });
+    cb.addEventListener('change', () => { set(cb.checked); saveExportSettings(); });
+    return cb;
+  };
+
+  const sep = document.createElement('select');
+  Object.assign(sep.style, { padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, cursor: 'pointer', fontFamily: 'inherit' });
+  [['Comma  (,)', ','], ['Semicolon  (;)', ';'], ['Tab', '\t']].forEach(([label, val]) => { const o = document.createElement('option'); o.value = val; o.textContent = label; sep.appendChild(o); });
+  sep.value = exportSettings.separator;
+  sep.addEventListener('change', () => { exportSettings.separator = sep.value as ExportSettings['separator']; saveExportSettings(); });
+  row('CSV separator', 'Delimiter for Download CSV and Copy as CSV.', sep);
+
+  row('Wrap long values', 'Let result cells wrap instead of truncating with “…”.', mkToggle(() => exportSettings.wrap, (v) => { exportSettings.wrap = v; }));
+  row('Hide relationship columns', 'Hide parent columns like Owner.Name from the table and exports.', mkToggle(() => exportSettings.hideRelations, (v) => { exportSettings.hideRelations = v; }));
+  row('Default to Tooling API', 'New query tabs start with the Tooling API checkbox on.', mkToggle(() => exportSettings.defaultTooling, (v) => { exportSettings.defaultTooling = v; }));
+
+  const maxIn = document.createElement('input');
+  maxIn.type = 'number'; maxIn.min = '50'; maxIn.max = '10000'; maxIn.step = '50'; maxIn.value = String(exportSettings.maxRows);
+  Object.assign(maxIn.style, { width: '90px', padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none', fontFamily: 'inherit' });
+  maxIn.addEventListener('change', () => { const n = parseInt(maxIn.value, 10); exportSettings.maxRows = isNaN(n) ? 1000 : Math.max(50, Math.min(10000, n)); maxIn.value = String(exportSettings.maxRows); saveExportSettings(); });
+  row('Max rows to display', 'How many rows to render in the table (exports include all).', maxIn);
+
+  const note = document.createElement('div');
+  note.textContent = 'Settings are saved automatically and persist across sessions.';
+  Object.assign(note.style, { fontSize: '12px', color: C.textMuted, marginTop: '14px' });
+  body.appendChild(note);
+}
+
 // ─── Spotlight Search ────────────────────────────────────────────────────────
 // Defined BEFORE injectSidebar so it is always in scope when called.
 
@@ -1316,6 +2014,7 @@ function showSpotlightSearch() {
 function buildSpotlight(tabConfig: TabConfig) {
   // ─── Theme tokens (light / dark) ───────────────────────────
   const isDark = currentSpotlightTheme === 'dark';
+  const fullPage = SPOTLIGHT_PAGE; // rendered as a standalone tab, not an overlay
   const T = {
     backdrop: isDark ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.2)',
     modalBg: isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.15)',
@@ -1360,12 +2059,12 @@ function buildSpotlight(tabConfig: TabConfig) {
   modalContent.style.width = '100%';
   modalContent.style.height = '100%';
   modalContent.style.display = 'flex';
-  modalContent.style.alignItems = 'center';
-  modalContent.style.justifyContent = 'center';
+  modalContent.style.alignItems = fullPage ? 'stretch' : 'center';
+  modalContent.style.justifyContent = fullPage ? 'stretch' : 'center';
   modalContent.style.zIndex = '2147483648';
   modalContent.style.pointerEvents = 'none';
 
-  // Backdrop
+  // Backdrop (dim overlay) — not used in full-page mode.
   const backdrop = document.createElement('div');
   backdrop.style.position = 'absolute';
   backdrop.style.top = '0';
@@ -1376,23 +2075,30 @@ function buildSpotlight(tabConfig: TabConfig) {
   backdrop.style.zIndex = '1';
   backdrop.style.cursor = 'pointer';
   backdrop.style.pointerEvents = 'auto';
-  backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) hideSpotlightSearch();
-  });
+  if (fullPage) backdrop.style.display = 'none';
+  else backdrop.addEventListener('click', (e) => { if (e.target === backdrop) hideSpotlightSearch(); });
 
   // Modal box
   const modal = document.createElement('div');
   modal.style.position = 'relative';
   modal.style.width = '100%';
-  modal.style.maxWidth = '768px';
-  // Opaque background, no blur behind the modal.
   modal.style.backgroundColor = isDark ? '#0f172a' : '#ffffff';
-  modal.style.borderRadius = '24px';
-  modal.style.boxShadow = '0 25px 50px rgba(0, 0, 0, 0.5)';
-  modal.style.border = `1px solid ${T.modalBorder}`;
   modal.style.overflow = 'hidden';
   modal.style.zIndex = '2';
   modal.style.pointerEvents = 'auto';
+  if (fullPage) {
+    // Fill the whole tab.
+    modal.style.maxWidth = 'none';
+    modal.style.height = '100vh';
+    modal.style.display = 'flex';
+    modal.style.flexDirection = 'column';
+    modal.style.borderRadius = '0';
+  } else {
+    modal.style.maxWidth = '768px';
+    modal.style.borderRadius = '24px';
+    modal.style.boxShadow = '0 25px 50px rgba(0, 0, 0, 0.5)';
+    modal.style.border = `1px solid ${T.modalBorder}`;
+  }
 
   // Input container
   const inputContainer = document.createElement('div');
@@ -1433,9 +2139,33 @@ function buildSpotlight(tabConfig: TabConfig) {
   closeBtn.addEventListener('mouseover', () => { closeBtn.style.backgroundColor = T.closeHover; });
   closeBtn.addEventListener('mouseout', () => { closeBtn.style.backgroundColor = 'transparent'; });
   closeBtn.addEventListener('click', () => hideSpotlightSearch());
+  if (fullPage) closeBtn.style.display = 'none';
+
+  // Open Spotlight as a full-page tab (overlay mode only).
+  const openTabBtn = document.createElement('button');
+  openTabBtn.title = 'Open in a new tab';
+  openTabBtn.style.marginLeft = '8px';
+  openTabBtn.style.padding = '8px';
+  openTabBtn.style.backgroundColor = 'transparent';
+  openTabBtn.style.border = 'none';
+  openTabBtn.style.cursor = 'pointer';
+  openTabBtn.style.borderRadius = '8px';
+  openTabBtn.style.transition = 'background-color 0.2s';
+  openTabBtn.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${T.iconStroke}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>`;
+  openTabBtn.addEventListener('mouseover', () => { openTabBtn.style.backgroundColor = T.closeHover; });
+  openTabBtn.addEventListener('mouseout', () => { openTabBtn.style.backgroundColor = 'transparent'; });
+  openTabBtn.addEventListener('click', () => {
+    const cr = (globalThis as any).chrome?.runtime;
+    const host = cleanSfDomain(sfHostname());
+    const url = cr?.getURL ? `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(host)}` : '';
+    if (url) cr.sendMessage({ type: 'OPEN_TAB', url });
+    hideSpotlightSearch();
+  });
+  if (fullPage) openTabBtn.style.display = 'none';
 
   inputContainer.appendChild(searchSvg);
   inputContainer.appendChild(searchInput);
+  inputContainer.appendChild(openTabBtn);
   inputContainer.appendChild(closeBtn);
 
   // Tabs (rendered dynamically from config)
@@ -1451,9 +2181,11 @@ function buildSpotlight(tabConfig: TabConfig) {
   // When set (on the Tools tab), a tool detail view is shown in-panel instead of the grid.
   let toolView: string | null = null;
 
-  // Results container — fixed height so the modal doesn't resize between tabs.
+  // Results container — fixed height (overlay) so the modal doesn't resize
+  // between tabs; flex-fill in full-page mode.
   const resultsContainer = document.createElement('div');
-  resultsContainer.style.height = '420px';
+  if (fullPage) { resultsContainer.style.flex = '1'; resultsContainer.style.minHeight = '0'; }
+  else { resultsContainer.style.height = '420px'; }
   resultsContainer.style.overflowY = 'auto';
   resultsContainer.style.scrollbarWidth = 'thin';
   resultsContainer.style.scrollbarColor = `${T.scrollThumb} transparent`;
@@ -1610,6 +2342,61 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   hintsBar.appendChild(brand);
   hintsBar.appendChild(hintsRight);
+
+  // Full-page top bar: brand + logged-in user / org (populated async).
+  if (fullPage) {
+    const topBar = document.createElement('div');
+    Object.assign(topBar.style, {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px',
+      padding: '14px 32px', borderBottom: `1px solid ${T.divider}`, flexShrink: '0',
+      background: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)',
+    });
+    const brandWrap = document.createElement('div');
+    Object.assign(brandWrap.style, { display: 'flex', alignItems: 'center', gap: '10px' });
+    const logo = document.createElement('img');
+    logo.src = (globalThis as any).chrome?.runtime?.getURL ? (globalThis as any).chrome.runtime.getURL('icons/Spotlite-Icon.svg') : 'icons/Spotlite-Icon.svg';
+    logo.alt = 'Spotlite';
+    Object.assign(logo.style, { width: '26px', height: '26px', borderRadius: '6px', flexShrink: '0' });
+    const brandTxt = document.createElement('div');
+    brandTxt.innerHTML = `<span style="font-weight:800;color:${T.textPrimary}">Spotlite</span> <span style="color:${T.textFaint};font-weight:600">for Salesforce</span>`;
+    brandTxt.style.fontSize = '15px';
+    brandWrap.appendChild(logo); brandWrap.appendChild(brandTxt);
+
+    const userWrap = document.createElement('div');
+    Object.assign(userWrap.style, { display: 'flex', alignItems: 'center', gap: '10px', textAlign: 'right' });
+    const userInfo = document.createElement('div');
+    const userName = document.createElement('div');
+    userName.textContent = 'Loading…';
+    Object.assign(userName.style, { fontSize: '13px', fontWeight: '700', color: T.textPrimary });
+    const userOrg = document.createElement('div');
+    Object.assign(userOrg.style, { fontSize: '11px', color: T.textMuted });
+    userInfo.appendChild(userName); userInfo.appendChild(userOrg);
+    const avatar = document.createElement('div');
+    Object.assign(avatar.style, { width: '34px', height: '34px', borderRadius: '50%', background: T.surface, border: `1px solid ${T.modalBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: '0' });
+    avatar.textContent = '👤';
+    userWrap.appendChild(userInfo); userWrap.appendChild(avatar);
+
+    topBar.appendChild(brandWrap);
+    topBar.appendChild(userWrap);
+    modal.appendChild(topBar);
+
+    // Fetch the logged-in user + org for the bar.
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { userName.textContent = 'Not connected'; return; }
+      const cr = (globalThis as any).chrome?.runtime;
+      cr?.sendMessage({ type: 'FETCH_USER_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
+        if (r?.success && r.data) {
+          userName.textContent = r.data.displayName || r.data.name || 'User';
+          if (r.data.email || r.data.username) userOrg.textContent = r.data.email || r.data.username;
+        } else { userName.textContent = 'User'; }
+      });
+      cr?.sendMessage({ type: 'GET_ORG_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
+        if (r?.success && r.data?.Name) {
+          userOrg.textContent = `${r.data.Name}${r.data.IsSandbox ? ' · Sandbox' : ''}`;
+        }
+      });
+    });
+  }
 
   modal.appendChild(tabsContainer);   // tabs on top
   modal.appendChild(inputContainer);
@@ -2170,7 +2957,7 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       const resultsList = document.createElement('div');
       filtered.forEach((link, index) => {
-        const fullUrl = link.isExternal ? link.link : `${window.location.protocol}//${window.location.hostname}${link.link}`;
+        const fullUrl = link.isExternal ? link.link : `${sfProtocol()}//${sfHostname()}${link.link}`;
         const entry = { kind: 'setup', icon: '🔗', title: link.label, subtitle: link.section, url: fullUrl };
         const resultItem = makeResultRow({
           icon: '🔗',
@@ -2403,7 +3190,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           const chromeRuntime = (globalThis as any).chrome?.runtime;
           if (!chromeRuntime) return;
           chromeRuntime.sendMessage(
-            { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(window.location.hostname) },
+            { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(sfHostname()) },
             (response: any) => {
               if (response?.data?.instanceUrl && response?.data?.sessionId) {
                 const { instanceUrl, sessionId } = response.data;
@@ -2427,7 +3214,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           const chromeRuntime = (globalThis as any).chrome?.runtime;
           if (!chromeRuntime) return;
           chromeRuntime.sendMessage(
-            { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(window.location.hostname) },
+            { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(sfHostname()) },
             (response: any) => {
               if (response?.data?.instanceUrl && response?.data?.sessionId) {
                 const { instanceUrl, sessionId } = response.data;
@@ -2484,7 +3271,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           const chromeRuntime = (globalThis as any).chrome?.runtime;
           if (!chromeRuntime) return;
           chromeRuntime.sendMessage(
-            { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(window.location.hostname) },
+            { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(sfHostname()) },
             (response: any) => {
               if (response?.data?.instanceUrl) {
                 const { instanceUrl } = response.data;
@@ -2672,9 +3459,13 @@ function buildSpotlight(tabConfig: TabConfig) {
       // A tool's detail view is shown in-panel (with a "Tools" back button).
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
+      // The search bar is dead weight inside the query editor — hide it for Export.
+      inputContainer.style.display = (toolView === 'export' || toolView === 'exportsettings') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
-        const onBack = () => { toolView = null; performSearch(); };
+        const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
+        if (toolView === 'export') { renderExportInto(resultsContainer, isDark, onBack, () => { toolView = 'exportsettings'; performSearch(); }); return; }
+        if (toolView === 'exportsettings') { renderExportSettingsInto(resultsContainer, isDark, () => { toolView = 'export'; performSearch(); }); return; }
         if (toolView === 'orgdetails') { renderOrgDetailsInto(resultsContainer, isDark, onBack); return; }
         if (toolView === 'release') { renderReleaseInfoInto(resultsContainer, isDark, onBack); return; }
         if (toolView === 'apiusage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '📊  API Usage', fields: API_FIELDS }); return; }
@@ -2704,6 +3495,10 @@ function buildSpotlight(tabConfig: TabConfig) {
           },
         },
         {
+          id: 'export', icon: '📤', label: 'Export Data', desc: 'Run SOQL & export CSV',
+          run: () => { searchInput.value = ''; toolView = 'export'; performSearch(); },
+        },
+        {
           id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'View this org’s info',
           run: () => { searchInput.value = ''; toolView = 'orgdetails'; performSearch(); },
         },
@@ -2718,6 +3513,16 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'storage', icon: '💾', label: 'Storage Insights', desc: 'Data & file storage',
           run: () => { searchInput.value = ''; toolView = 'storage'; performSearch(); },
+        },
+        {
+          id: 'clearsession', icon: '🧹', label: 'Clear Session', desc: 'Reset the cached SF session',
+          run: () => {
+            const cr = (globalThis as any).chrome?.runtime;
+            cr?.sendMessage({ type: 'CLEAR_SESSION_CACHE', hostname: cleanSfDomain(sfHostname()) }, () => {
+              flashToast('Cached session cleared — credentials will refresh');
+            });
+            hideSpotlightSearch();
+          },
         },
         {
           id: 'ghost', icon: '👻', label: 'Ghost Session', desc: 'Open your session in Incognito',
@@ -3164,7 +3969,8 @@ function buildSpotlight(tabConfig: TabConfig) {
 
     if (e.key === 'Escape') {
       e.preventDefault();
-      hideSpotlightSearch();
+      if (fullPage) { searchInput.value = ''; performSearch(); }
+      else hideSpotlightSearch();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       selectedIndex = Math.min(selectedIndex + 1, buttons.length - 1);
@@ -3225,16 +4031,16 @@ function hideSpotlightSearch() {
 
 function injectSidebar() {
   if (!isSalesforcePage()) {
-    //console.log('[SF Log Analyzer] Not a Salesforce page, skipping injection');
+    //console.log('[SF Spotlight] Not a Salesforce page, skipping injection');
     return;
   }
 
   if (document.getElementById('sf-log-analyzer-iframe')) {
-    //console.log('[SF Log Analyzer] Already injected, skipping');
+    //console.log('[SF Spotlight] Already injected, skipping');
     return;
   }
 
-  //console.log('[SF Log Analyzer] Injecting sidebar on Salesforce page');
+  //console.log('[SF Spotlight] Injecting sidebar on Salesforce page');
 
   loadSettings((settings) => {
     let isPanelOpen = false;
@@ -3366,7 +4172,7 @@ function injectSidebar() {
       if (event.altKey && event.code === 'KeyT') {
         event.preventDefault();
         event.stopPropagation();
-        //console.log('[SF Log Analyzer] Alt/Option+T pressed on main page');
+        //console.log('[SF Spotlight] Alt/Option+T pressed on main page');
         showSpotlightSearch();
         return false;
       }
@@ -3379,13 +4185,33 @@ function injectSidebar() {
     };
 
     document.addEventListener('keydown', handleKeyDown, true);
-    //console.log('[SF Log Analyzer] Keyboard shortcut listener attached to document');
+    //console.log('[SF Spotlight] Keyboard shortcut listener attached to document');
   });
+}
+
+// Full-page tab: render the Spotlight directly. Otherwise inject the overlay.
+function bootFullPageSpotlight() {
+  document.documentElement.style.height = '100%';
+  document.body.style.margin = '0';
+  document.body.style.height = '100%';
+  document.title = 'Spotlight for Salesforce';
+  // Load the saved theme + tab config before building so colors are correct.
+  loadSettings((s) => {
+    currentSpotlightTheme = s.spotlightTheme;
+    document.body.style.background = currentSpotlightTheme === 'dark' ? '#0f172a' : '#ffffff';
+    loadTabConfig();
+    setTimeout(() => buildSpotlight(currentTabConfig), 50);
+  });
+}
+
+function init() {
+  if (SPOTLIGHT_PAGE) bootFullPageSpotlight();
+  else injectSidebar();
 }
 
 // Wait for DOM to be ready
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', injectSidebar);
+  document.addEventListener('DOMContentLoaded', init);
 } else {
-  injectSidebar();
+  init();
 }

@@ -872,6 +872,84 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'GET_OBJECT_FIELDS') {
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${request.objectApiName}/describe`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 100)}`); })))
+          .then((d) => sendResponse({ success: true, data: (d.fields || []).map((f: any) => ({ name: f.name, label: f.label, type: f.type })) }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'GET_QUERY_PLAN') {
+        // Query Plan / explain — shows leading operation, cardinality, cost.
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const path = request.useTooling ? 'tooling/query' : 'query';
+        fetch(`${request.instanceUrl}/services/data/${V}/${path}/?explain=${encodeURIComponent(request.query)}`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { let m = `HTTP ${res.status}`; try { const j = JSON.parse(t); if (Array.isArray(j) && j[0]?.message) m = j[0].message; } catch { m = `${m}: ${t.substring(0, 120)}`; } throw new Error(m); })))
+          .then((data) => sendResponse({ success: true, data: { plans: data.plans || [] } }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'RUN_SOQL') {
+        // Run a SOQL query (standard, Tooling, or queryAll for deleted/archived)
+        // and follow nextRecordsUrl to gather all rows (capped for safety).
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const endpoint = request.useTooling ? 'tooling/query' : (request.queryAll ? 'queryAll' : 'query');
+        const base = `${request.instanceUrl}/services/data/${V}/${endpoint}`;
+        const CAP = 50000;
+
+        const run = (url: string) => fetch(url, { headers }).then(async (res) => {
+          if (!res.ok) {
+            const t = await res.text();
+            let msg = `HTTP ${res.status}`;
+            try { const j = JSON.parse(t); if (Array.isArray(j) && j[0]?.message) msg = j[0].message; else if (j?.message) msg = j.message; } catch { msg = `${msg}: ${t.substring(0, 120)}`; }
+            throw new Error(msg);
+          }
+          return res.json();
+        });
+
+        (async () => {
+          try {
+            const all: any[] = [];
+            let data = await run(`${base}/?q=${encodeURIComponent(request.query)}`);
+            let totalSize = data.totalSize;
+            all.push(...(data.records || []));
+            while (data.nextRecordsUrl && all.length < CAP) {
+              data = await run(`${request.instanceUrl}${data.nextRecordsUrl}`);
+              all.push(...(data.records || []));
+            }
+            sendResponse({ success: true, data: { records: all, totalSize: totalSize ?? all.length, done: !data.nextRecordsUrl } });
+          } catch (err: any) {
+            sendResponse({ success: false, error: err?.message || 'Query failed.' });
+          }
+        })();
+
+        return true;
+      }
+
+      if (request.type === 'CLEAR_SESSION_CACHE') {
+        // Drop the extension's cached Salesforce session for this host so the
+        // next action re-detects fresh credentials.
+        const host = request.hostname;
+        if (host && chromeAPI?.storage?.session) {
+          chromeAPI.storage.session.remove(`sfData_${host}`, () => sendResponse({ success: true }));
+        } else {
+          sendResponse({ success: false, error: 'No host or session storage.' });
+        }
+        return true;
+      }
+
+      if (request.type === 'OPEN_TAB') {
+        if (chromeAPI?.tabs?.create && request.url) chromeAPI.tabs.create({ url: request.url });
+        sendResponse({ success: true });
+        return true;
+      }
+
       if (request.type === 'GET_ORG_LIMITS') {
         // /limits returns every org limit as { Max, Remaining } — covers both API
         // usage (DailyApiRequests, etc.) and storage (DataStorageMB, FileStorageMB).

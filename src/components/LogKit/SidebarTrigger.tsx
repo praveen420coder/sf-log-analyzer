@@ -8,10 +8,10 @@ interface SidebarTriggerProps {
 
 const SidebarTrigger: React.FC<SidebarTriggerProps> = ({ onOpenLogs, onOpenSpotlight }) => (
   <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 flex flex-col w-7 rounded-l-2xl overflow-hidden border-y border-l border-white/20">
-    {/* Top: open Spotlite search */}
+    {/* Top: open Spotlight search */}
     <button
       onClick={onOpenSpotlight}
-      title="Open Spotlite search (Alt/Option + T)"
+      title="Open Spotlight search (Alt/Option + T)"
       className="bg-black opacity-40 hover:opacity-100 transition-all flex flex-col items-center justify-center w-full h-14 group"
     >
       <Search size={11} className="text-white mb-1 transform group-hover:scale-110 transition-transform" />

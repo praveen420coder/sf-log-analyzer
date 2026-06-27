@@ -1,10 +1,10 @@
-# SF Log Analyzer
+# SF Spotlight
 
 A Salesforce log analysis tool available as both a **browser extension** and **web application**. The browser extension integrates directly with Salesforce, automatically extracting your credentials to fetch and analyze ApexLogs.
 
 ## Quick Start - Browser Extension
 
-The easiest way to use SF Log Analyzer is as a Chrome/Firefox extension that auto-detects your Salesforce session.
+The easiest way to use SF Spotlight is as a Chrome/Firefox extension that auto-detects your Salesforce session.
 
 ### Installation
 
@@ -28,7 +28,7 @@ The easiest way to use SF Log Analyzer is as a Chrome/Firefox extension that aut
 
 4. **Use the extension:**
    - Log into your Salesforce instance
-   - Click the **SF Log Analyzer** icon in your browser toolbar
+   - Click the **SF Spotlight** icon in your browser toolbar
    - Extension automatically detects your credentials
    - Click **Fetch Session Logs** to view your ApexLogs
 

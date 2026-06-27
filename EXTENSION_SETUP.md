@@ -85,7 +85,7 @@ For permanent installation, package as `.xpi` using Firefox's web-ext tool.
    Should output: `🚀 Server running on http://localhost:5000`
 
 3. **Open Extension**
-   - Click the **SF Log Analyzer** extension icon in your toolbar
+   - Click the **SF Spotlight** extension icon in your toolbar
    - The popup opens and automatically:
      - Detects your Salesforce instance URL
      - Extracts your session ID
@@ -173,8 +173,8 @@ Right-click Salesforce page → Inspect → Console
 
 **Background Script:**
 ```
-Chrome: Extensions page → SF Log Analyzer → Service Worker
-Firefox: about:debugging → SF Log Analyzer → Inspect
+Chrome: Extensions page → SF Spotlight → Service Worker
+Firefox: about:debugging → SF Spotlight → Inspect
 ```
 
 **Popup:**
