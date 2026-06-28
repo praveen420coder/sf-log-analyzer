@@ -430,7 +430,7 @@ let currentUserId: string | null = null;
 // ─── Metadata Explorer catalog ───────────────────────────────────────────────
 // Each entry: a metadata type, its query (tooling or data API) and table columns.
 interface MetaColumn { key: string; label: string; }
-interface MetaType { id: string; label: string; icon: string; tooling: boolean; soql: string; columns: MetaColumn[]; }
+interface MetaType { id: string; label: string; icon: string; tooling: boolean; soql: string; columns: MetaColumn[]; idField?: string; }
 const METADATA_CATALOG: MetaType[] = [
   { id: 'ApexClass', label: 'Apex Classes', icon: '📦', tooling: true, soql: "SELECT Name, ApiVersion, LengthWithoutComments, Status, LastModifiedDate FROM ApexClass ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'ApiVersion', label: 'API' }, { key: 'LengthWithoutComments', label: 'Length' }, { key: 'Status', label: 'Status' }, { key: 'LastModifiedDate', label: 'Modified' }] },
   { id: 'ApexTrigger', label: 'Apex Triggers', icon: '⚡', tooling: true, soql: "SELECT Name, TableEnumOrId, ApiVersion, Status, LastModifiedDate FROM ApexTrigger ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'TableEnumOrId', label: 'Object' }, { key: 'ApiVersion', label: 'API' }, { key: 'Status', label: 'Status' }, { key: 'LastModifiedDate', label: 'Modified' }] },
@@ -441,7 +441,7 @@ const METADATA_CATALOG: MetaType[] = [
   { id: 'CustomObject', label: 'Custom Objects', icon: '🗃️', tooling: true, soql: "SELECT DeveloperName, NamespacePrefix, ManageableState FROM CustomObject ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'NamespacePrefix', label: 'Namespace' }, { key: 'ManageableState', label: 'State' }] },
   { id: 'CustomField', label: 'Custom Fields', icon: '🔤', tooling: true, soql: "SELECT DeveloperName, TableEnumOrId, NamespacePrefix FROM CustomField ORDER BY TableEnumOrId LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Field' }, { key: 'TableEnumOrId', label: 'Object' }, { key: 'NamespacePrefix', label: 'Namespace' }] },
   { id: 'ValidationRule', label: 'Validation Rules', icon: '✅', tooling: true, soql: "SELECT ValidationName, Active, ErrorMessage FROM ValidationRule ORDER BY ValidationName LIMIT 2000", columns: [{ key: 'ValidationName', label: 'Name' }, { key: 'Active', label: 'Active' }, { key: 'ErrorMessage', label: 'Error Message' }] },
-  { id: 'FlowDefinitionView', label: 'Flows', icon: '🌊', tooling: false, soql: "SELECT ApiName, Label, ProcessType, TriggerType, IsActive FROM FlowDefinitionView ORDER BY Label LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'ApiName', label: 'API Name' }, { key: 'ProcessType', label: 'Type' }, { key: 'TriggerType', label: 'Trigger' }, { key: 'IsActive', label: 'Active' }] },
+  { id: 'FlowDefinitionView', label: 'Flows', icon: '🌊', tooling: false, idField: 'DurableId', soql: "SELECT DurableId, ApiName, Label, ProcessType, TriggerType, IsActive FROM FlowDefinitionView ORDER BY Label LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'ApiName', label: 'API Name' }, { key: 'ProcessType', label: 'Type' }, { key: 'TriggerType', label: 'Trigger' }, { key: 'IsActive', label: 'Active' }] },
   { id: 'PermissionSet', label: 'Permission Sets', icon: '🛡️', tooling: false, soql: "SELECT Name, Label, IsOwnedByProfile FROM PermissionSet ORDER BY Name LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'Name', label: 'API Name' }, { key: 'IsOwnedByProfile', label: 'Profile-owned' }] },
   { id: 'Profile', label: 'Profiles', icon: '👤', tooling: false, soql: "SELECT Name, UserType FROM Profile ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'UserType', label: 'User Type' }] },
   { id: 'CustomPermission', label: 'Custom Permissions', icon: '🔑', tooling: true, soql: "SELECT DeveloperName, MasterLabel, NamespacePrefix FROM CustomPermission ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'NamespacePrefix', label: 'Namespace' }] },
@@ -459,8 +459,15 @@ let cachedApps: any[] | null = null;
 // no Salesforce host in window.location — we carry it in the query string.
 const SPOTLIGHT_PAGE = typeof location !== 'undefined' && location.pathname.endsWith('spotlight.html');
 let pageHost: string | null = null;
+// When opened as spotlight.html?...&analyzeLog=<logId>, jump straight into the
+// Log Explorer and open the analyzer for that log.
+let pageAnalyzeLog: string | null = null;
 if (SPOTLIGHT_PAGE) {
-  try { pageHost = new URLSearchParams(location.search).get('host'); } catch { pageHost = null; }
+  try {
+    const sp = new URLSearchParams(location.search);
+    pageHost = sp.get('host');
+    pageAnalyzeLog = sp.get('analyzeLog');
+  } catch { pageHost = null; }
 }
 function sfHostname(): string { return pageHost || window.location.hostname; }
 function sfProtocol(): string { return pageHost ? 'https:' : window.location.protocol; }
@@ -969,9 +976,9 @@ function showRecordDetail(recordId: string): void {
             th.textContent = h;
             Object.assign(th.style, {
               position: 'sticky', top: '0', textAlign: 'left', padding: '10px 16px',
-              background: C.headerBg, color: C.textFaint, fontSize: '10px',
+              background: currentSpotlightTheme === 'dark' ? '#1e293b' : '#ffffff', color: C.textFaint, fontSize: '10px',
               fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em',
-              borderBottom: `1px solid ${C.divider}`, backdropFilter: 'blur(8px)',
+              borderBottom: `1px solid ${C.divider}`,
               width: i === 1 ? '140px' : 'auto',
             });
             htr.appendChild(th);
@@ -1679,7 +1686,7 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
     vcols.forEach((c) => {
       const th = document.createElement('th');
       th.textContent = c;
-      Object.assign(th.style, { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: C.headerBg, color: C.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C.borderStrong}` });
+      Object.assign(th.style, { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: currentSpotlightTheme === 'dark' ? '#1e293b' : '#ffffff', color: C.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C.borderStrong}` });
       htr.appendChild(th);
     });
     thead.appendChild(htr); table.appendChild(thead);
@@ -2546,7 +2553,9 @@ function buildSpotlight(tabConfig: TabConfig) {
   tabsContainer.style.display = 'flex';
   tabsContainer.style.alignItems = 'center';
 
-  let activeTab = tabConfig.defaultTab;
+  let activeTab = (SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab;
+  // When opened via ?analyzeLog=<id>, the Log Explorer opens this log's analyzer immediately.
+  let pendingAnalyzeLogId: string | null = (SPOTLIGHT_PAGE && pageAnalyzeLog) ? pageAnalyzeLog : null;
   // When set (on the Tools tab), a tool detail view is shown in-panel instead of the grid.
   let toolView: string | null = null;
   // Active section in the ⚙ settings panel.
@@ -2626,18 +2635,16 @@ function buildSpotlight(tabConfig: TabConfig) {
   brand.addEventListener('mouseover', () => { brand.style.opacity = '0.7'; });
   brand.addEventListener('mouseout', () => { brand.style.opacity = '1'; });
 
-  const logo = document.createElement('div');
-  logo.style.width = '18px';
-  logo.style.height = '18px';
-  logo.style.borderRadius = '5px';
-  logo.style.background = 'linear-gradient(135deg, #4f8cff, #2563eb)';
-  logo.style.boxShadow = '0 1px 4px rgba(37, 99, 235, 0.45)';
-  logo.style.flexShrink = '0';
+  const logo = document.createElement('img');
+  try { logo.src = (globalThis as any).chrome?.runtime?.getURL?.('icons/Spotlite-Icon.svg') || ''; } catch { /* ignore */ }
+  Object.assign(logo.style, { width: '20px', height: '20px', borderRadius: '5px', flexShrink: '0', display: 'block' });
+  // Fallback to a gradient chip if the icon can't load.
+  logo.addEventListener('error', () => { logo.style.background = 'linear-gradient(135deg, #4f8cff, #2563eb)'; logo.style.boxShadow = '0 1px 4px rgba(37, 99, 235, 0.45)'; });
 
   const brandText = document.createElement('div');
   brandText.style.fontSize = '13px';
   brandText.style.whiteSpace = 'nowrap';
-  brandText.innerHTML = `<span style="font-weight:700;color:${T.textPrimary};">Spotlight</span> <span style="color:${T.textFaint};font-weight:500;"> for Salesforce</span>`;
+  brandText.innerHTML = `<span style="font-weight:800;color:${T.textPrimary};letter-spacing:-0.2px;">SF Spotlight</span>`;
 
   brand.appendChild(logo);
   brand.appendChild(brandText);
@@ -2718,19 +2725,72 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   hintsBar.appendChild(brand);
 
-  // Full-page footer also greets the logged-in user (name + email).
+  // Full-page footer greets the logged-in user in a colourful badge.
   if (fullPage) {
+    const isDark = currentSpotlightTheme === 'dark';
     const greet = document.createElement('div');
-    Object.assign(greet.style, { fontSize: '12px', color: T.textMuted, marginLeft: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
-    greet.innerHTML = `Welcome, <span style="color:${T.textPrimary};font-weight:700">…</span>`;
+    Object.assign(greet.style, {
+      display: 'flex', alignItems: 'center', gap: '9px', marginLeft: '14px', padding: '3px 13px 3px 3px',
+      borderRadius: '999px', whiteSpace: 'nowrap', maxWidth: '340px', overflow: 'hidden', flexShrink: '0',
+      background: isDark ? 'linear-gradient(135deg, rgba(79,140,255,0.18), rgba(168,85,247,0.16))' : 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(168,85,247,0.10))',
+      border: `1px solid ${isDark ? 'rgba(129,140,248,0.40)' : 'rgba(99,102,241,0.30)'}`,
+    });
+    const avatar = document.createElement('div');
+    Object.assign(avatar.style, { width: '26px', height: '26px', borderRadius: '50%', flexShrink: '0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: '800', color: '#fff', background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 1px 5px rgba(99,102,241,0.5)' });
+    avatar.textContent = '…';
+    const txt = document.createElement('div');
+    Object.assign(txt.style, { display: 'flex', flexDirection: 'column', lineHeight: '1.2', overflow: 'hidden' });
+    const nm = document.createElement('span');
+    Object.assign(nm.style, { fontSize: '12px', fontWeight: '700', color: T.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis' });
+    nm.textContent = 'Loading…';
+    const em = document.createElement('span');
+    Object.assign(em.style, { fontSize: '10.5px', color: T.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', display: 'none' });
+    txt.appendChild(nm); txt.appendChild(em);
+    greet.appendChild(avatar); greet.appendChild(txt);
     hintsBar.appendChild(greet);
+
+    const initialsOf = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || '').join('') || 'U';
     getSfCredentials().then((creds: any) => {
-      if (!creds?.instanceUrl || !creds?.sessionId) { greet.innerHTML = 'Welcome, <span style="font-weight:700">Guest</span>'; return; }
+      if (!creds?.instanceUrl || !creds?.sessionId) { nm.textContent = 'Guest'; avatar.textContent = 'G'; return; }
       (globalThis as any).chrome?.runtime?.sendMessage({ type: 'FETCH_USER_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
         if (r?.success && r.data) {
           const name = r.data.displayName || r.data.name || 'User';
           const email = r.data.email || r.data.username || '';
-          greet.innerHTML = `Welcome, <span style="color:${T.textPrimary};font-weight:700">${name}</span>${email ? ` <span style="color:${T.textFaint}">· ${email}</span>` : ''}`;
+          nm.textContent = name;
+          avatar.textContent = initialsOf(name);
+          if (email) { em.textContent = email; em.style.display = ''; }
+        } else { nm.textContent = 'User'; avatar.textContent = 'U'; }
+      });
+    });
+
+    // Org-context badges: edition · instance · API version · release.
+    const badges = document.createElement('div');
+    Object.assign(badges.style, { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '10px', overflow: 'hidden', flexShrink: '1' });
+    hintsBar.appendChild(badges);
+    const mkBadge = (fg: string, bg: string, border: string) => {
+      const b = document.createElement('span');
+      Object.assign(b.style, { display: 'none', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '999px', fontSize: '11.5px', fontWeight: '700', whiteSpace: 'nowrap', color: fg, background: bg, border: `1px solid ${border}` });
+      badges.appendChild(b);
+      return b;
+    };
+    const fillBadge = (b: HTMLElement, icon: string, text: string) => { if (!text) return; b.innerHTML = `<span style="font-size:11px">${icon}</span>${text}`; b.style.display = 'inline-flex'; };
+    const bEd = mkBadge(isDark ? '#fca5a5' : '#b91c1c', 'rgba(239,68,68,0.14)', 'rgba(239,68,68,0.35)');
+    const bInst = mkBadge(isDark ? '#93c5fd' : '#1d4ed8', 'rgba(59,130,246,0.14)', 'rgba(59,130,246,0.35)');
+    const bVer = mkBadge(isDark ? '#86efac' : '#15803d', 'rgba(34,197,94,0.14)', 'rgba(34,197,94,0.35)');
+    const bRel = mkBadge(isDark ? '#c4b5fd' : '#7c3aed', 'rgba(168,85,247,0.14)', 'rgba(168,85,247,0.35)');
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) return;
+      const msg = { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId };
+      (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_ORG_INFO', ...msg }, (r: any) => {
+        if (r?.success && r.data) {
+          fillBadge(bEd, '🏛️', r.data.OrganizationType || '');
+          fillBadge(bInst, '📍', r.data.InstanceName || '');
+        }
+      });
+      (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_RELEASE_INFO', ...msg }, (r: any) => {
+        if (r?.success && r.data) {
+          fillBadge(bVer, '‹›', r.data.version || '');
+          fillBadge(bRel, '☁️', r.data.label || '');
         }
       });
     });
@@ -3386,11 +3446,18 @@ function buildSpotlight(tabConfig: TabConfig) {
       if (!cat) { metadataType = null; performSearch(); return; }
       (searchInput as HTMLInputElement).placeholder = `Search ${cat.label}...`;
 
+      const idField = cat.idField || 'Id';
       const fetchMeta = (c: MetaType) => new Promise<{ records: any[]; error?: string }>((resolve) => {
         getSfCredentials().then((creds: any) => {
           if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+          // Ensure the id field is selected so we can link each row to its record.
+          let soql = c.soql;
+          const selectClause = soql.split(/\sFROM\s/i)[0] || '';
+          if (!new RegExp(`(^|[\\s,])${idField}([\\s,]|$)`, 'i').test(selectClause)) {
+            soql = soql.replace(/^SELECT\s/i, `SELECT ${idField}, `);
+          }
           (globalThis as any).chrome.runtime.sendMessage(
-            { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: c.soql, tooling: c.tooling },
+            { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: c.tooling },
             (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
           );
         });
@@ -3416,6 +3483,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       back.addEventListener('click', () => { metadataType = null; (searchInput as HTMLInputElement).value = ''; performSearch(); });
       head.appendChild(back);
       const title = document.createElement('div');
+      title.style.color = T.textPrimary;
       title.innerHTML = `<span style="font-size:15px">${cat.icon}</span> <span style="font-weight:800;font-size:14px">${cat.label}</span>`;
       head.appendChild(title);
       const countEl = document.createElement('span');
@@ -3466,8 +3534,9 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       const table = document.createElement('table');
       Object.assign(table.style, { borderCollapse: 'collapse', width: '100%', fontSize: '12.5px' });
-      const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: T.surface, color: T.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', borderBottom: `1px solid ${T.chipBorder}`, zIndex: '1' } as Partial<CSSStyleDeclaration>;
+      const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: currentSpotlightTheme === 'dark' ? '#1e293b' : '#ffffff', color: T.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', borderBottom: `1px solid ${T.chipBorder}`, zIndex: '1' } as Partial<CSSStyleDeclaration>;
       const thead = document.createElement('thead'); const htr = document.createElement('tr');
+      const idTh = document.createElement('th'); Object.assign(idTh.style, thStyle); idTh.textContent = 'Id'; htr.appendChild(idTh);
       cat.columns.forEach((c) => { const th = document.createElement('th'); Object.assign(th.style, thStyle); th.textContent = c.label; htr.appendChild(th); });
       thead.appendChild(htr); table.appendChild(thead);
       const tbody = document.createElement('tbody');
@@ -3477,6 +3546,21 @@ function buildSpotlight(tabConfig: TabConfig) {
         if (ri % 2 === 1) tr.style.background = T.surface;
         tr.addEventListener('mouseover', () => (tr.style.background = T.rowHover));
         tr.addEventListener('mouseout', () => (tr.style.background = ri % 2 === 1 ? T.surface : ''));
+        // Id cell — links to the metadata record in Salesforce.
+        const idTd = document.createElement('td'); Object.assign(idTd.style, { ...tdStyle, maxWidth: '160px' });
+        const idVal = r[idField];
+        if (idVal) {
+          const a = document.createElement('a');
+          a.textContent = String(idVal);
+          a.href = `${lightningOrigin()}/${idVal}`;
+          a.target = '_blank'; a.rel = 'noopener noreferrer';
+          a.title = `Open ${idVal}`;
+          Object.assign(a.style, { color: T.accent, textDecoration: 'none', fontFamily: 'Fira Code, monospace', fontSize: '11.5px' });
+          a.addEventListener('mouseover', () => (a.style.textDecoration = 'underline'));
+          a.addEventListener('mouseout', () => (a.style.textDecoration = 'none'));
+          idTd.appendChild(a);
+        } else { idTd.textContent = '—'; idTd.style.color = T.textFaint; }
+        tr.appendChild(idTd);
         cat.columns.forEach((c) => {
           const td = document.createElement('td'); Object.assign(td.style, tdStyle);
           const val = fmtVal(c.key, getVal(r, c.key));
@@ -3838,6 +3922,14 @@ function buildSpotlight(tabConfig: TabConfig) {
         });
       };
 
+      // Deep-link: opened via ?analyzeLog=<id> — jump straight into the analyzer.
+      if (pendingAnalyzeLogId) {
+        const id = pendingAnalyzeLogId;
+        pendingAnalyzeLogId = null;
+        openAnalyzer(id, id);
+        return;
+      }
+
       const COLS: { key: string; label: string; sk: string }[] = [
         { key: 'DurationMilliseconds', label: 'Duration (ms)', sk: 'DurationMilliseconds' },
         { key: 'LogLength', label: 'Size (Bytes)', sk: 'LogLength' },
@@ -3864,7 +3956,7 @@ function buildSpotlight(tabConfig: TabConfig) {
         }
         const table = document.createElement('table');
         Object.assign(table.style, { borderCollapse: 'collapse', width: '100%', fontSize: '13px' });
-        const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: C2.headerBg, color: C2.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C2.border}` } as Partial<CSSStyleDeclaration>;
+        const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: currentSpotlightTheme === 'dark' ? '#1e293b' : '#ffffff', color: C2.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C2.border}` } as Partial<CSSStyleDeclaration>;
         const thead = document.createElement('thead'); const htr = document.createElement('tr');
         const selTh = document.createElement('th'); Object.assign(selTh.style, thStyle);
         const selAll = document.createElement('input'); selAll.type = 'checkbox'; selAll.style.cursor = 'pointer';
@@ -4347,7 +4439,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   };
 
   // Show at most this many tabs in the bar; the rest go under "More ▾".
-  const MAX_VISIBLE_TABS = 6;
+  const MAX_VISIBLE_TABS = 5;
 
   const renderTabBar = () => {
     tabsContainer.innerHTML = '';
@@ -4666,7 +4758,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   spotlightContainer.style.display = 'flex';
   spotlightContainer.style.pointerEvents = 'auto';
   modalContent.style.pointerEvents = 'auto';
-  activateTab(tabConfig.defaultTab);
+  activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab);
   searchInput.focus();
 }
 

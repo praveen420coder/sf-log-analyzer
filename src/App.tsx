@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import Header from './components/LogKit/Header';
 import DashboardView from './components/LogKit/DashboardView';
-import DetailView from './components/LogKit/DetailView';
 import SettingsView from './components/LogKit/SettingsView';
 import SidebarTrigger from './components/LogKit/SidebarTrigger';
 import Toast from './components/Toast';
@@ -12,8 +11,7 @@ import type { Log } from './types';
 
 export default function App() {
   const [isOpen, setIsOpen] = useState<boolean>(false);
-  const [view, setView] = useState<'dashboard' | 'detail' | 'settings'>('dashboard');
-  const [selectedLog, setSelectedLog] = useState<Log | null>(null);
+  const [view, setView] = useState<'dashboard' | 'settings'>('dashboard');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [isDebugSessionControlOpen, setIsDebugSessionControlOpen] = useState(false);
   const prevFetchingRef = useRef(false);
@@ -108,12 +106,20 @@ export default function App() {
   }, [logs]);
 
   const handleExplore = (log: Log) => {
-    setSelectedLog(log);
-    setView('detail');
+    // Open the new full-page Log Explorer and jump straight into the analyzer.
+    const logId = (log as any).id || (log as any).Id;
+    const cr = (globalThis as any).chrome?.runtime;
+    let host = '';
+    try { host = instanceUrl ? new URL(instanceUrl).hostname : ''; } catch { host = ''; }
+    if (cr?.getURL && logId && host) {
+      const url = `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(host)}&analyzeLog=${encodeURIComponent(logId)}`;
+      if (cr.sendMessage) cr.sendMessage({ type: 'OPEN_TAB', url });
+      else window.open(url, '_blank');
+    }
   };
 
   const handleNavigate = (newView: 'dashboard' | 'detail' | 'settings') => {
-    setView(newView);
+    if (newView !== 'detail') setView(newView);
   };
 
   return (
@@ -176,21 +182,12 @@ export default function App() {
                 onOpenDebugSessionControl={() => setIsDebugSessionControlOpen(true)}
               />
             ) : view === 'settings' ? (
-              <SettingsView 
+              <SettingsView
                 settings={settings}
                 onSettingsChange={updateSettings}
                 onResetSettings={resetSettings}
               />
-            ) : (
-              selectedLog && (
-                <DetailView 
-                  log={selectedLog} 
-                  onBack={() => setView('dashboard')} 
-                  instanceUrl={instanceUrl}
-                  sessionId={sessionId}
-                />
-              )
-            )}
+            ) : null}
           </main>
 
           <footer className="p-8 bg-white border-t border-gray-100 flex items-center justify-between">

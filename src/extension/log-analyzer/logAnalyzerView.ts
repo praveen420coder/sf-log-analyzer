@@ -13,6 +13,8 @@ import type { ApexLog, LogEvent } from '../apex-log-parser/index';
 import { initTimeline } from './timelineRenderer';
 import { toAggregatedCallTree, toBottomUpTree } from './agg/Aggregation';
 import type { AggregatedRow, BottomUpRow } from './agg/Aggregation';
+import { LogAnalyzer } from '../../utils/logAnalyzer';
+import type { PerformanceInsight, LogMetrics } from '../../utils/logAnalyzer';
 
 export interface AnalyzerOptions {
   isDark: boolean;
@@ -26,7 +28,7 @@ function makePalette(isDark: boolean) {
   return {
     bg: isDark ? '#0e1626' : '#ffffff',
     panel: isDark ? '#111c30' : '#ffffff',
-    headerBg: isDark ? 'rgba(255,255,255,0.04)' : '#f8fafc',
+    headerBg: isDark ? '#16223b' : '#eef2f7',
     zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
     hover: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
     text: isDark ? '#e2e8f0' : '#1f2937',
@@ -110,6 +112,7 @@ export function renderLogAnalyzerInto(host: HTMLElement, logText: string, opts: 
     { id: 'calltree', label: 'Call Tree', icon: '☰', render: () => renderCallTree(content, apexLog, C) },
     { id: 'analysis', label: 'Analysis', icon: '</>', render: () => renderAnalysis(content, apexLog, C) },
     { id: 'database', label: 'Database', icon: '🗄', render: () => renderDatabase(content, apexLog, C) },
+    { id: 'insights', label: 'Insights', icon: '💡', render: () => renderInsights(content, logText, C) },
     { id: 'rawlog', label: 'Raw Log', icon: '📄', render: () => renderRawLog(content, logText, C) },
   ];
   let active = 'timeline';
@@ -686,6 +689,105 @@ function sectionTitle(C: Palette, title: string, sub: string): HTMLElement {
 function emptyRow(C: Palette, span: number, text: string): HTMLTableRowElement {
   const tr = el('tr'); const td = el('td', { ...tdStyle(C), color: C.muted, textAlign: 'center', padding: '18px' }, text);
   td.colSpan = span; tr.appendChild(td); return tr;
+}
+
+// ── Insights (cloned from the old DetailView Insights tab) ───────────────────
+function renderInsights(host: HTMLElement, logText: string, C: Palette): void {
+  const scroll = el('div', { height: '100%', overflow: 'auto', padding: '16px' });
+  host.appendChild(scroll);
+  const loading = el('div', { padding: '24px', color: C.muted, fontSize: '13px' }, 'Analyzing log…');
+  scroll.appendChild(loading);
+
+  new LogAnalyzer({} as never).analyzeLog(logText).then(({ insights, metrics }) => {
+    scroll.innerHTML = '';
+    scroll.appendChild(buildInsights(insights, metrics, C));
+  }).catch((e: Error) => {
+    scroll.innerHTML = '';
+    scroll.appendChild(el('div', { padding: '24px', color: C.muted, fontSize: '13px' }, 'Could not analyze log: ' + e.message));
+  });
+}
+
+function fmtDur(ns: number): string {
+  if (!ns) return '0 ms';
+  const m = ns / 1e6;
+  return m < 1000 ? `${m.toFixed(m < 10 ? 2 : 1)} ms` : `${(m / 1000).toFixed(2)} s`;
+}
+
+function buildInsights(insights: PerformanceInsight[], metrics: LogMetrics, C: Palette): HTMLElement {
+  const wrap = el('div', { display: 'flex', flexDirection: 'column', gap: '24px' });
+
+  // Governor limit cards
+  const limSection = el('div');
+  limSection.appendChild(el('div', { fontSize: '15px', fontWeight: '800', marginBottom: '12px', color: C.text }, 'Governor Limits'));
+  const grid = el('div', { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' });
+  const limitCard = (label: string, lim: { used: number; total: number; percentage: number } | undefined, fmt: (v: number) => string) => {
+    if (!lim) return;
+    const pct = Math.min(lim.percentage, 100);
+    const color = lim.percentage > 80 ? '#ef4444' : lim.percentage > 50 ? '#f59e0b' : '#22c55e';
+    const card = el('div', { border: `1px solid ${C.border}`, borderRadius: '12px', padding: '14px', background: C.panel });
+    card.appendChild(el('div', { fontSize: '10px', fontWeight: '800', letterSpacing: '0.08em', textTransform: 'uppercase', color: C.muted, marginBottom: '6px' }, label));
+    card.appendChild(el('div', { fontSize: '22px', fontWeight: '800', color: C.text }, fmt(lim.used)));
+    const meta = el('div', { display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: C.muted, margin: '8px 0 4px' });
+    meta.appendChild(el('span', { color }, `${lim.percentage.toFixed(0)}%`));
+    meta.appendChild(el('span', {}, `${fmt(lim.total)} limit`));
+    card.appendChild(meta);
+    const track = el('div', { width: '100%', height: '8px', borderRadius: '999px', background: C.zebra, overflow: 'hidden' });
+    track.appendChild(el('div', { width: `${pct}%`, height: '8px', borderRadius: '999px', background: color }));
+    card.appendChild(track);
+    grid.appendChild(card);
+  };
+  limitCard('CPU Time', metrics.cpuTime, (v) => `${(v / 1000).toFixed(0)} ms`);
+  limitCard('Heap Size', metrics.heapSize, (v) => `${(v / 1024).toFixed(0)} KB`);
+  limitCard('SOQL Queries', metrics.soqlQueries, (v) => String(v));
+  limitCard('Query Rows', metrics.queryRows, (v) => String(v));
+  limitCard('DML Statements', metrics.dmlStatements, (v) => String(v));
+  limitCard('DML Rows', metrics.dmlRows, (v) => String(v));
+  if (metrics.slowestSoql) {
+    const card = el('div', { border: `1px solid ${C.border}`, borderRadius: '12px', padding: '14px', background: C.panel, gridColumn: 'span 2' });
+    card.appendChild(el('div', { fontSize: '10px', fontWeight: '800', letterSpacing: '0.08em', textTransform: 'uppercase', color: C.muted, marginBottom: '6px' }, 'Slowest SOQL'));
+    card.appendChild(el('div', { fontSize: '20px', fontWeight: '800', color: '#fb923c' }, fmtDur(metrics.slowestSoql.duration)));
+    card.appendChild(el('div', { fontSize: '11px', color: C.muted, marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }, metrics.slowestSoql.query));
+    grid.appendChild(card);
+  }
+  if (metrics.slowestMethod) {
+    const card = el('div', { border: `1px solid ${C.border}`, borderRadius: '12px', padding: '14px', background: C.panel });
+    card.appendChild(el('div', { fontSize: '10px', fontWeight: '800', letterSpacing: '0.08em', textTransform: 'uppercase', color: C.muted, marginBottom: '6px' }, 'Slowest Method'));
+    card.appendChild(el('div', { fontSize: '20px', fontWeight: '800', color: '#c084fc' }, fmtDur(metrics.slowestMethod.duration)));
+    card.appendChild(el('div', { fontSize: '11px', color: C.muted, marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, metrics.slowestMethod.name));
+    grid.appendChild(card);
+  }
+  if (!grid.children.length) grid.appendChild(el('div', { color: C.muted, fontSize: '13px' }, 'No governor-limit data captured in this log.'));
+  limSection.appendChild(grid);
+  wrap.appendChild(limSection);
+
+  // Insights & recommendations
+  const insSection = el('div');
+  insSection.appendChild(el('div', { fontSize: '15px', fontWeight: '800', marginBottom: '12px', color: C.text }, 'Insights & Recommendations'));
+  const tint: Record<string, { bg: string; border: string; icon: string; col: string }> = {
+    error: { bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.35)', icon: '⛔', col: '#ef4444' },
+    warning: { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.35)', icon: '⚠️', col: '#f59e0b' },
+    success: { bg: 'rgba(34,197,94,0.10)', border: 'rgba(34,197,94,0.35)', icon: '✅', col: '#22c55e' },
+    info: { bg: 'rgba(59,130,246,0.10)', border: 'rgba(59,130,246,0.35)', icon: 'ℹ️', col: '#3b82f6' },
+  };
+  const sevBg: Record<string, string> = { high: '#dc2626', medium: '#d97706', low: '#9ca3af' };
+  const list = el('div', { display: 'flex', flexDirection: 'column', gap: '10px' });
+  insights.forEach((ins) => {
+    const t = tint[ins.type] || tint.info;
+    const card = el('div', { display: 'flex', gap: '10px', alignItems: 'flex-start', border: `1px solid ${t.border}`, background: t.bg, borderRadius: '12px', padding: '14px' });
+    card.appendChild(el('span', { fontSize: '16px', lineHeight: '1.2' }, t.icon));
+    const body = el('div', { flex: '1', minWidth: '0' });
+    const headRow = el('div', { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' });
+    headRow.appendChild(el('span', { fontSize: '13px', fontWeight: '800', color: C.text }, ins.title));
+    headRow.appendChild(el('span', { fontSize: '9px', fontWeight: '800', textTransform: 'uppercase', color: '#fff', background: sevBg[ins.severity] || '#9ca3af', padding: '2px 7px', borderRadius: '999px' }, ins.severity));
+    body.appendChild(headRow);
+    body.appendChild(el('div', { fontSize: '12px', color: C.muted, lineHeight: '1.5' }, ins.description));
+    card.appendChild(body);
+    list.appendChild(card);
+  });
+  if (!insights.length) list.appendChild(el('div', { color: C.muted, fontSize: '13px' }, 'No issues detected.'));
+  insSection.appendChild(list);
+  wrap.appendChild(insSection);
+  return wrap;
 }
 
 // ── Raw Log ──────────────────────────────────────────────────────────────────
