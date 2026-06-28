@@ -9,6 +9,9 @@ interface SalesforceData {
 
 const chromeAPI = (globalThis as any).chrome;
 
+// In-flight SOQL queries, keyed by requestId, so they can be cancelled.
+const soqlAborters: Record<string, AbortController> = {};
+
 // Allow iframe (untrusted context) to access session storage
 if (chromeAPI?.storage?.session?.setAccessLevel) {
   chromeAPI.storage.session.setAccessLevel({ 
@@ -217,6 +220,28 @@ if (chromeRuntime) {
         .then(data => sendResponse({ success: true, data }))
         .catch(err => sendResponse({ success: false, error: err.message }));
         
+        return true;
+      }
+
+      if (request.type === 'GET_DEBUG_LOGS') {
+        const where = request.userId ? ` WHERE LogUserId = '${request.userId}'` : '';
+        const query = `SELECT Id, LogLength, Operation, Status, StartTime, DurationMilliseconds, Request, LogUser.Name FROM ApexLog${where} ORDER BY StartTime DESC LIMIT 100`;
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+          headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' },
+        })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 100) || 'Unknown error'}`); })))
+          .then((data) => sendResponse({ success: true, data: data.records || [] }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'DELETE_APEX_LOG') {
+        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/ApexLog/${request.logId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${request.sessionId}` },
+        })
+          .then((res) => { if (res.ok || res.status === 204) sendResponse({ success: true }); else res.text().then((t) => sendResponse({ success: false, error: `HTTP ${res.status}: ${t.substring(0, 100)}` })); })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
         return true;
       }
 
@@ -877,7 +902,7 @@ if (chromeRuntime) {
         const headers = { 'Authorization': `Bearer ${request.sessionId}` };
         fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${request.objectApiName}/describe`, { headers })
           .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 100)}`); })))
-          .then((d) => sendResponse({ success: true, data: (d.fields || []).map((f: any) => ({ name: f.name, label: f.label, type: f.type })) }))
+          .then((d) => sendResponse({ success: true, data: (d.fields || []).map((f: any) => ({ name: f.name, label: f.label, type: f.type, calculated: f.calculated === true })) }))
           .catch((err) => sendResponse({ success: false, error: err.message }));
         return true;
       }
@@ -894,16 +919,27 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'CANCEL_SOQL') {
+        const c = request.requestId && soqlAborters[request.requestId];
+        if (c) { c.abort(); delete soqlAborters[request.requestId]; }
+        sendResponse({ success: true });
+        return true;
+      }
+
       if (request.type === 'RUN_SOQL') {
         // Run a SOQL query (standard, Tooling, or queryAll for deleted/archived)
         // and follow nextRecordsUrl to gather all rows (capped for safety).
+        // Abortable via CANCEL_SOQL using the supplied requestId.
         const V = 'v60.0';
         const headers = { 'Authorization': `Bearer ${request.sessionId}` };
         const endpoint = request.useTooling ? 'tooling/query' : (request.queryAll ? 'queryAll' : 'query');
         const base = `${request.instanceUrl}/services/data/${V}/${endpoint}`;
         const CAP = 50000;
+        const controller = new AbortController();
+        const reqId: string | undefined = request.requestId;
+        if (reqId) soqlAborters[reqId] = controller;
 
-        const run = (url: string) => fetch(url, { headers }).then(async (res) => {
+        const run = (url: string) => fetch(url, { headers, signal: controller.signal }).then(async (res) => {
           if (!res.ok) {
             const t = await res.text();
             let msg = `HTTP ${res.status}`;
@@ -919,13 +955,16 @@ if (chromeRuntime) {
             let data = await run(`${base}/?q=${encodeURIComponent(request.query)}`);
             let totalSize = data.totalSize;
             all.push(...(data.records || []));
-            while (data.nextRecordsUrl && all.length < CAP) {
+            while (data.nextRecordsUrl && all.length < CAP && !controller.signal.aborted) {
               data = await run(`${request.instanceUrl}${data.nextRecordsUrl}`);
               all.push(...(data.records || []));
             }
             sendResponse({ success: true, data: { records: all, totalSize: totalSize ?? all.length, done: !data.nextRecordsUrl } });
           } catch (err: any) {
-            sendResponse({ success: false, error: err?.message || 'Query failed.' });
+            if (err?.name === 'AbortError') sendResponse({ success: false, cancelled: true, error: 'Cancelled' });
+            else sendResponse({ success: false, error: err?.message || 'Query failed.' });
+          } finally {
+            if (reqId) delete soqlAborters[reqId];
           }
         })();
 

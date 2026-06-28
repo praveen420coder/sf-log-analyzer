@@ -131,6 +131,7 @@ const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
   { id: 'users', label: 'Users', placeholder: 'Search Users...', icon: '👤' },
   { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
   { id: 'flows', label: 'Flows', placeholder: 'Search Flows...', icon: '⚡' },
+  { id: 'debug', label: 'Debug Logs', placeholder: 'Search your debug logs...', icon: '🐞' },
   { id: 'apps', label: 'Apps & Tabs', placeholder: 'Search apps & tabs...', icon: '🚀' }
 ];
 
@@ -423,6 +424,7 @@ let cachedFlows: any[] | null = null;
 let cachedObjects: any[] | null = null;
 let cachedMetadata: any[] | null = null;
 let cachedSecurity: any[] | null = null;
+let cachedDebugLogs: any[] | null = null;
 let currentUserId: string | null = null;
 let cachedApps: any[] | null = null;
 
@@ -1353,15 +1355,38 @@ function addSoqlHistory(q: string): void {
   q = q.trim(); if (!q) return;
   soqlHistory = soqlHistory.filter(h => h.query !== q);
   soqlHistory.unshift({ query: q, ts: Date.now() });
-  if (soqlHistory.length > 30) soqlHistory.length = 30;
+  const lim = Math.max(1, exportSettings.historyLimit || 30);
+  if (soqlHistory.length > lim) soqlHistory.length = lim;
   persistSoqlHistory();
 }
 loadSoqlStore();
 
 // Data Export preferences (dedicated settings page).
-interface ExportSettings { separator: ',' | ';' | '\t'; wrap: boolean; hideRelations: boolean; defaultTooling: boolean; maxRows: number; }
+interface ExportSettings {
+  separator: ',' | ';' | '\t';
+  wrap: boolean;
+  hideRelations: boolean;       // hide parent/relationship columns by default
+  defaultTooling: boolean;
+  maxRows: number;
+  showExecTime: boolean;        // show query execution time
+  localTime: boolean;           // render datetimes in local time
+  sobjectContext: boolean;      // seed query from the current record/object page
+  showButtons: boolean;         // show the secondary action buttons
+  includeFormula: boolean;      // include formula fields in autocomplete
+  disableAutofocus: boolean;    // don't focus the editor on open
+  historyLimit: number;
+  savedLimit: number;
+  templates: string[];          // query templates
+  typoFix: boolean;             // auto-fix common SOQL keyword typos
+  promptTemplateName: boolean;  // prompt for a name when saving
+  showStop: boolean;            // show a Stop button to cancel a running query
+}
 const EXPORT_SETTINGS_KEY = 'sf_export_settings';
-let exportSettings: ExportSettings = { separator: ',', wrap: false, hideRelations: false, defaultTooling: false, maxRows: 1000 };
+let exportSettings: ExportSettings = {
+  separator: ',', wrap: false, hideRelations: false, defaultTooling: false, maxRows: 1000,
+  showExecTime: true, localTime: false, sobjectContext: false, showButtons: true, includeFormula: true,
+  disableAutofocus: false, historyLimit: 30, savedLimit: 50, templates: [], typoFix: false, promptTemplateName: true, showStop: true,
+};
 function loadExportSettings(): void {
   (globalThis as any).chrome?.storage?.local?.get([EXPORT_SETTINGS_KEY], (res: any) => {
     if (res?.[EXPORT_SETTINGS_KEY]) exportSettings = { ...exportSettings, ...res[EXPORT_SETTINGS_KEY] };
@@ -1370,9 +1395,13 @@ function loadExportSettings(): void {
 function saveExportSettings(): void { (globalThis as any).chrome?.storage?.local?.set({ [EXPORT_SETTINGS_KEY]: exportSettings }); }
 loadExportSettings();
 
+// Handoff from the Query Builder → Export view.
+let pendingExportQuery: string | null = null;
+let pendingExportRun = false;
+
 // Object + field metadata caches for autocomplete.
 let soqlObjects: { name: string; label: string }[] | null = null;
-const soqlFieldCache: Record<string, { name: string; label: string; type: string }[]> = {};
+const soqlFieldCache: Record<string, { name: string; label: string; type: string; calculated?: boolean }[]> = {};
 function getSoqlObjects(cb: (list: { name: string; label: string }[]) => void): void {
   if (soqlObjects) { cb(soqlObjects); return; }
   getSfCredentials().then((creds: any) => {
@@ -1386,7 +1415,7 @@ function getSoqlObjects(cb: (list: { name: string; label: string }[]) => void): 
     );
   });
 }
-function getSoqlFields(object: string, cb: (fields: { name: string; label: string; type: string }[]) => void): void {
+function getSoqlFields(object: string, cb: (fields: { name: string; label: string; type: string; calculated?: boolean }[]) => void): void {
   const key = object.toLowerCase();
   if (soqlFieldCache[key]) { cb(soqlFieldCache[key]); return; }
   getSfCredentials().then((creds: any) => {
@@ -1396,6 +1425,27 @@ function getSoqlFields(object: string, cb: (fields: { name: string; label: strin
       (r: any) => { const fields = (r?.success && r.data) ? r.data : []; soqlFieldCache[key] = fields; cb(fields); }
     );
   });
+}
+
+// Cleans up query syntax (matches Inspector's "typo fix"): stray/double commas,
+// a comma left before FROM, and collapses excess whitespace.
+function fixSoqlTypos(q: string): string {
+  return q
+    .replace(/,\s*,/g, ',')              // double commas → one
+    .replace(/,\s*FROM\s+/gi, ' FROM ')  // comma right before FROM
+    .replace(/\s+/g, ' ')                // collapse whitespace/newlines
+    .trim();
+}
+function formatLocalTimeCell(v: any): any {
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)) {
+    const d = new Date(v);
+    if (!isNaN(d.getTime())) return d.toLocaleString();
+  }
+  return v;
+}
+function detectPageObject(): string | null {
+  const m = window.location.pathname.match(/\/lightning\/[ro]\/([A-Za-z0-9_]+)\//);
+  return m ? m[1] : null;
 }
 
 // Flatten SOQL records into { columns, rows }, expanding parent relationships
@@ -1426,7 +1476,7 @@ function flattenSoqlRecords(records: any[]): { columns: string[]; rows: Record<s
   return { columns, rows };
 }
 
-function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void, onSettings: () => void): void {
+function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void, onBuilder: () => void): void {
   host.innerHTML = '';
   const C = {
     border: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.15)',
@@ -1449,12 +1499,18 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
   const root = document.createElement('div');
   Object.assign(root.style, { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column' });
   host.appendChild(root);
-  root.appendChild(toolBackHeader(isDark, '📤  Export Data', onBack));
+  const exportHeader = toolBackHeader(isDark, '📤  Export Data', onBack);
+  root.appendChild(exportHeader);
 
   // Query tabs — each keeps its own query + results.
   const DEFAULT_QUERY = 'SELECT Id, Name, CreatedDate FROM Account ORDER BY CreatedDate DESC LIMIT 50';
+  const ctxObject = exportSettings.sobjectContext ? detectPageObject() : null;
+  const seedFromBuilder = pendingExportQuery;
+  const runFromBuilder = pendingExportRun;
+  pendingExportQuery = null; pendingExportRun = false;
+  const SEED_QUERY = seedFromBuilder || (ctxObject ? `SELECT Id, Name FROM ${ctxObject} LIMIT 50` : DEFAULT_QUERY);
   type ExportTab = { name: string; query: string; cols: string[]; rows: Record<string, any>[]; status: string; tooling: boolean; queryAll: boolean };
-  const tabs: ExportTab[] = [{ name: 'Query 1', query: DEFAULT_QUERY, cols: [], rows: [], status: '', tooling: exportSettings.defaultTooling, queryAll: false }];
+  const tabs: ExportTab[] = [{ name: 'Query 1', query: SEED_QUERY, cols: [], rows: [], status: '', tooling: exportSettings.defaultTooling, queryAll: false }];
   let active = 0;
   const tabStrip = document.createElement('div');
   Object.assign(tabStrip.style, { flexShrink: '0', display: 'flex', alignItems: 'center', gap: '4px', padding: '10px 24px 0', overflowX: 'auto' });
@@ -1511,14 +1567,15 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
   };
 
   const runBtn = mkBtn('Run', true);
+  const stopBtn = mkBtn('Stop');
+  Object.assign(stopBtn.style, { display: 'none', border: '1px solid #ef4444', color: '#ef4444' });
+  const builderBtn = mkBtn('🧱 Builder');
+  builderBtn.addEventListener('click', onBuilder);
   const planBtn = mkBtn('Query Plan');
   const saveBtn = mkBtn('Save');
   const histBtn = mkBtn('Saved / History ▾');
   const copyMenuBtn = mkBtn('Copy ▾');
   const csvBtn = mkBtn('Download CSV');
-  const gearBtn = mkBtn('⚙'); gearBtn.title = 'Export settings';
-  Object.assign(gearBtn.style, { fontSize: '18px', lineHeight: '1', padding: '7px 12px' });
-  gearBtn.addEventListener('click', onSettings);
   copyMenuBtn.disabled = csvBtn.disabled = true;
   copyMenuBtn.style.opacity = csvBtn.style.opacity = '0.5';
 
@@ -1533,7 +1590,31 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
   const status = document.createElement('span');
   Object.assign(status.style, { fontSize: '12px', color: C.textMuted, marginLeft: 'auto' });
 
-  [runBtn, planBtn, saveBtn, histBtn, tooling.l, qall.l, copyMenuBtn, csvBtn, gearBtn, filterInput, status].forEach((el) => controls.appendChild(el));
+  // Group the buttons so the toolbar reads cleanly: run actions | query mgmt |
+  // (spacer) | options | export | settings.
+  const group = (els: HTMLElement[], gap = '6px') => { const g = document.createElement('div'); Object.assign(g.style, { display: 'flex', alignItems: 'center', gap }); els.forEach((e) => g.appendChild(e)); return g; };
+  const vdiv = () => { const d = document.createElement('div'); Object.assign(d.style, { width: '1px', alignSelf: 'stretch', minHeight: '22px', background: C.divider, margin: '0 2px' }); return d; };
+
+  // Builder + Saved/History live up in the header bar; Save stays with the actions.
+  const headerActions = document.createElement('div');
+  Object.assign(headerActions.style, { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' });
+  headerActions.appendChild(builderBtn);
+  headerActions.appendChild(histBtn);
+  if (!exportSettings.showButtons) histBtn.style.display = 'none';
+  exportHeader.appendChild(headerActions);
+
+  const grpRun = group([runBtn, stopBtn, planBtn]);
+  const div1 = vdiv();
+  const grpMgmt = group([saveBtn]);
+  const spacer = document.createElement('div'); spacer.style.flex = '1'; spacer.style.minWidth = '12px';
+  const grpOpts = group([tooling.l, qall.l], '14px');
+  const div2 = vdiv();
+  const grpExport = group([copyMenuBtn, csvBtn]);
+
+  filterInput.style.width = '170px';
+  status.style.marginLeft = '4px';
+  [grpRun, div1, grpMgmt, spacer, filterInput, grpOpts, div2, grpExport, status].forEach((el) => controls.appendChild(el));
+  if (!exportSettings.showButtons) [planBtn, div1, grpMgmt, div2, grpExport].forEach((el) => { (el as HTMLElement).style.display = 'none'; });
   top.appendChild(controls);
 
   // Table scroll area — the ONLY part that scrolls (vertically & horizontally).
@@ -1581,7 +1662,8 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
       if (ri % 2 === 1) tr.style.background = C.zebra;
       vcols.forEach((c) => {
         const td = document.createElement('td');
-        td.textContent = r[c] === undefined || r[c] === null ? '' : String(r[c]);
+        const cell = exportSettings.localTime ? formatLocalTimeCell(r[c]) : r[c];
+        td.textContent = cell === undefined || cell === null ? '' : String(cell);
         Object.assign(td.style, { padding: '6px 12px', color: C.textPrimary, border: `1px solid ${C.divider}`, verticalAlign: 'top',
           ...(wrap ? { whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: '420px' } : { whiteSpace: 'nowrap', maxWidth: '380px', overflow: 'hidden', textOverflow: 'ellipsis' }) });
         tr.appendChild(td);
@@ -1650,20 +1732,29 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
 
   const showError = (msg: string) => { tableScroll.innerHTML = ''; const e = document.createElement('div'); e.textContent = msg; Object.assign(e.style, { padding: '14px 24px', color: '#ef4444', fontSize: '13px', fontWeight: '600' }); tableScroll.appendChild(e); };
 
+  let activeReqId: string | null = null;
+  const endRun = () => { activeReqId = null; runBtn.disabled = false; runBtn.style.opacity = '1'; stopBtn.style.display = 'none'; };
+
   const run = () => {
-    const query = ta.value.trim();
+    let query = ta.value.trim();
     if (!query) return;
+    if (exportSettings.typoFix) { const fixed = fixSoqlTypos(query); if (fixed !== query) { query = fixed; ta.value = query; } }
     tabs[active].query = query; tabs[active].tooling = tooling.cb.checked; tabs[active].queryAll = qall.cb.checked;
     status.textContent = 'Running…'; status.style.color = C.textMuted;
     runBtn.disabled = true; runBtn.style.opacity = '0.6';
+    if (exportSettings.showStop) { stopBtn.style.display = 'inline-block'; stopBtn.disabled = false; }
     setExportEnabled(false);
+    const reqId = 'q' + Date.now() + Math.random().toString(36).slice(2);
+    activeReqId = reqId;
     const t0 = performance.now();
     getSfCredentials().then((creds: any) => {
-      if (!creds?.instanceUrl || !creds?.sessionId) { status.textContent = 'No session'; runBtn.disabled = false; runBtn.style.opacity = '1'; return; }
+      if (!creds?.instanceUrl || !creds?.sessionId) { status.textContent = 'No session'; endRun(); return; }
       (globalThis as any).chrome.runtime.sendMessage(
-        { type: 'RUN_SOQL', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query, useTooling: tooling.cb.checked, queryAll: qall.cb.checked },
+        { type: 'RUN_SOQL', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query, useTooling: tooling.cb.checked, queryAll: qall.cb.checked, requestId: reqId },
         (resp: any) => {
-          runBtn.disabled = false; runBtn.style.opacity = '1';
+          if (activeReqId !== reqId) return; // cancelled or superseded
+          endRun();
+          if (resp?.cancelled) { status.textContent = 'Cancelled'; return; }
           if (!resp?.success) { status.textContent = ''; showError(resp?.error || 'Query failed.'); return; }
           addSoqlHistory(query);
           const recs = resp.data.records || [];
@@ -1672,7 +1763,8 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
           tabs[active].cols = cols; tabs[active].rows = rows;
           const ms = Math.round(performance.now() - t0);
           const capped = resp.data.done === false;
-          status.textContent = `${recs.length.toLocaleString()} row${recs.length === 1 ? '' : 's'} · ${ms}ms${capped ? ' (capped 50k)' : ''}`;
+          const timePart = exportSettings.showExecTime ? ` · ${ms}ms` : '';
+          status.textContent = `${recs.length.toLocaleString()} row${recs.length === 1 ? '' : 's'}${timePart}${capped ? ' (capped 50k)' : ''}`;
           tabs[active].status = status.textContent;
           setExportEnabled(recs.length > 0);
           renderTable();
@@ -1680,6 +1772,12 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
       );
     });
   };
+  stopBtn.addEventListener('click', () => {
+    if (!activeReqId) return;
+    (globalThis as any).chrome?.runtime?.sendMessage({ type: 'CANCEL_SOQL', requestId: activeReqId });
+    endRun();
+    status.textContent = 'Cancelled'; status.style.color = C.textMuted;
+  });
   runBtn.addEventListener('click', run);
 
   // ── Query Plan ──
@@ -1718,11 +1816,13 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
   // ── Save + Saved/History dropdown ──
   saveBtn.addEventListener('click', () => {
     const q = ta.value.trim(); if (!q) return;
-    const name = window.prompt('Save query as:', q.replace(/\s+/g, ' ').slice(0, 40));
-    if (!name) return;
+    const autoName = q.replace(/\s+/g, ' ').slice(0, 40);
+    let name: string | null = autoName;
+    if (exportSettings.promptTemplateName) { name = window.prompt('Save query as:', autoName); if (!name) return; }
     soqlSaved = soqlSaved.filter((s) => s.name !== name);
     soqlSaved.unshift({ name, query: q });
-    if (soqlSaved.length > 50) soqlSaved.length = 50;
+    const lim = Math.max(1, exportSettings.savedLimit || 50);
+    if (soqlSaved.length > lim) soqlSaved.length = lim;
     persistSoqlSaved();
     flashToast('Query saved');
   });
@@ -1746,7 +1846,9 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
       row.addEventListener('click', () => { ta.value = q; closeMenu(); ta.focus(); });
       menu.appendChild(row);
     };
-    if (soqlSaved.length === 0 && soqlHistory.length === 0) { const empty = document.createElement('div'); empty.textContent = 'No saved queries or history yet.'; Object.assign(empty.style, { padding: '14px', fontSize: '13px', color: C.textMuted }); menu.appendChild(empty); }
+    const templates = (exportSettings.templates || []).filter((t) => t.trim());
+    if (soqlSaved.length === 0 && soqlHistory.length === 0 && templates.length === 0) { const empty = document.createElement('div'); empty.textContent = 'No saved queries, templates or history yet.'; Object.assign(empty.style, { padding: '14px', fontSize: '13px', color: C.textMuted }); menu.appendChild(empty); }
+    if (templates.length) { section('Templates'); templates.forEach((t) => item(t.replace(/\s+/g, ' ').slice(0, 60), t, t)); }
     if (soqlSaved.length) { section('★ Saved'); soqlSaved.forEach((s) => item(s.name, s.query, s.query)); }
     if (soqlHistory.length) { section('Recent'); soqlHistory.forEach((h) => item(h.query.replace(/\s+/g, ' ').slice(0, 60), h.query, h.query)); }
     document.body.appendChild(menu);
@@ -1913,12 +2015,16 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
     } else if (ctx.clause === 'selectList') {
       const funcItems = filterFuncs(ctx.word);
       if (!ctx.object) { showSugg(funcItems, setCtx); return; }
-      getSoqlFields(ctx.object, (fields) => {
+      getSoqlFields(ctx.object, (allFields) => {
+        const fields = exportSettings.includeFormula ? allFields : allFields.filter((f) => !f.calculated);
         const fieldItems: Sugg[] = rankFilter(fields, ctx.word).map((f: any) => ({ insert: f.name, label: f.name, sub: `${f.label} · ${f.type}`, kind: 'field' as const }));
         showSugg([...funcItems, ...fieldItems].slice(0, 14), setCtx);
       });
     } else if ((ctx.clause === 'where' || ctx.clause === 'orderGroup') && ctx.object) {
-      getSoqlFields(ctx.object, (fields) => showSugg(rankFilter(fields, ctx.word).map((f: any) => ({ insert: f.name, label: f.name, sub: `${f.label} · ${f.type}`, kind: 'field' as const })), setCtx));
+      getSoqlFields(ctx.object, (allFields) => {
+        const fields = exportSettings.includeFormula ? allFields : allFields.filter((f) => !f.calculated);
+        showSugg(rankFilter(fields, ctx.word).map((f: any) => ({ insert: f.name, label: f.name, sub: `${f.label} · ${f.type}`, kind: 'field' as const })), setCtx);
+      });
     } else {
       hideSugg();
     }
@@ -1940,23 +2046,13 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
 
   // Warm the object cache for snappy first suggestions.
   getSoqlObjects(() => {});
+  if (!exportSettings.disableAutofocus) setTimeout(() => ta.focus(), 40);
+  if (runFromBuilder) setTimeout(run, 80);
 }
 
-function renderExportSettingsInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
-  host.innerHTML = '';
-  const C = {
-    border: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(31,41,55,0.2)',
-    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
-    inputBg: isDark ? 'rgba(255,255,255,0.06)' : '#ffffff',
-    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
-    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    accent: '#2563eb',
-  };
-  host.appendChild(toolBackHeader(isDark, '⚙  Export Settings', onBack));
-  const body = document.createElement('div');
-  Object.assign(body.style, { padding: '8px 28px 24px', display: 'flex', flexDirection: 'column', gap: '4px' });
-  host.appendChild(body);
-
+// Appends the Data Export setting rows into a container (used by the main
+// settings panel) — colors are supplied so it matches the host theme.
+function appendExportSettings(body: HTMLElement, C: { border: string; divider: string; inputBg: string; textPrimary: string; textMuted: string; accent: string }): void {
   const row = (title: string, hint: string, control: HTMLElement) => {
     const r = document.createElement('div');
     Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 0', borderBottom: `1px solid ${C.divider}` });
@@ -1986,16 +2082,262 @@ function renderExportSettingsInto(host: HTMLElement, isDark: boolean, onBack: ()
   row('Hide relationship columns', 'Hide parent columns like Owner.Name from the table and exports.', mkToggle(() => exportSettings.hideRelations, (v) => { exportSettings.hideRelations = v; }));
   row('Default to Tooling API', 'New query tabs start with the Tooling API checkbox on.', mkToggle(() => exportSettings.defaultTooling, (v) => { exportSettings.defaultTooling = v; }));
 
-  const maxIn = document.createElement('input');
-  maxIn.type = 'number'; maxIn.min = '50'; maxIn.max = '10000'; maxIn.step = '50'; maxIn.value = String(exportSettings.maxRows);
-  Object.assign(maxIn.style, { width: '90px', padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none', fontFamily: 'inherit' });
-  maxIn.addEventListener('change', () => { const n = parseInt(maxIn.value, 10); exportSettings.maxRows = isNaN(n) ? 1000 : Math.max(50, Math.min(10000, n)); maxIn.value = String(exportSettings.maxRows); saveExportSettings(); });
-  row('Max rows to display', 'How many rows to render in the table (exports include all).', maxIn);
+  row('Display query execution time', 'Show how long each query took, in milliseconds.', mkToggle(() => exportSettings.showExecTime, (v) => { exportSettings.showExecTime = v; }));
+  row('Show local time', 'Render date/time values in your local timezone in the table.', mkToggle(() => exportSettings.localTime, (v) => { exportSettings.localTime = v; }));
+  row('Use SObject context', 'When opening Export from a record/object page, seed the query with that object.', mkToggle(() => exportSettings.sobjectContext, (v) => { exportSettings.sobjectContext = v; }));
+  row('Show buttons', 'Show the secondary action buttons (Plan, Save, History, Copy, Download).', mkToggle(() => exportSettings.showButtons, (v) => { exportSettings.showButtons = v; }));
+  row('Show stop button', 'Show a Stop button while a query runs so you can cancel long queries.', mkToggle(() => exportSettings.showStop, (v) => { exportSettings.showStop = v; }));
+  row('Include formula fields from suggestions', 'Suggest formula (calculated) fields in autocomplete.', mkToggle(() => exportSettings.includeFormula, (v) => { exportSettings.includeFormula = v; }));
+  row('Disable query input autofocus', 'Don’t focus the query editor automatically when Export opens.', mkToggle(() => exportSettings.disableAutofocus, (v) => { exportSettings.disableAutofocus = v; }));
+  row('Enable query typo fix', 'On Run, clean up the query: remove stray/double commas, a comma before FROM, and extra spaces.', mkToggle(() => exportSettings.typoFix, (v) => { exportSettings.typoFix = v; }));
+  row('Prompt template name', 'Ask for a name when saving a query (off = auto-name).', mkToggle(() => exportSettings.promptTemplateName, (v) => { exportSettings.promptTemplateName = v; }));
+
+  const mkNum = (get: () => number, set: (v: number) => void, min: number, max: number, step: number, dflt: number) => {
+    const i = document.createElement('input'); i.type = 'number'; i.min = String(min); i.max = String(max); i.step = String(step); i.value = String(get());
+    Object.assign(i.style, { width: '90px', padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none', fontFamily: 'inherit' });
+    i.addEventListener('change', () => { const n = parseInt(i.value, 10); const v = isNaN(n) ? dflt : Math.max(min, Math.min(max, n)); set(v); i.value = String(v); saveExportSettings(); });
+    return i;
+  };
+  row('Queries kept in history', 'How many recent queries to remember.', mkNum(() => exportSettings.historyLimit, (v) => { exportSettings.historyLimit = v; }, 5, 200, 5, 30));
+  row('Saved queries limit', 'Maximum number of saved queries.', mkNum(() => exportSettings.savedLimit, (v) => { exportSettings.savedLimit = v; }, 5, 200, 5, 50));
+  row('Max rows to display', 'How many rows to render in the table (exports include all).', mkNum(() => exportSettings.maxRows, (v) => { exportSettings.maxRows = v; }, 50, 10000, 50, 1000));
+
+  // Query templates (one per line) — surfaced in the Saved/History dropdown.
+  const tplWrap = document.createElement('div');
+  Object.assign(tplWrap.style, { padding: '14px 0' });
+  const tplTitle = document.createElement('div'); tplTitle.textContent = 'Query templates'; Object.assign(tplTitle.style, { fontSize: '14px', fontWeight: '700', color: C.textPrimary });
+  const tplHint = document.createElement('div'); tplHint.textContent = 'One SOQL query per line. These appear under “Templates” in the Saved/History menu.'; Object.assign(tplHint.style, { fontSize: '12px', color: C.textMuted, margin: '2px 0 8px' });
+  const tplArea = document.createElement('textarea');
+  tplArea.value = (exportSettings.templates || []).join('\n'); tplArea.spellcheck = false;
+  Object.assign(tplArea.style, { width: '100%', minHeight: '90px', boxSizing: 'border-box', resize: 'vertical', padding: '10px 12px', fontFamily: 'Fira Code, monospace', fontSize: '12px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none' });
+  tplArea.addEventListener('change', () => { exportSettings.templates = tplArea.value.split('\n').map((s) => s.trim()).filter(Boolean); saveExportSettings(); });
+  tplWrap.appendChild(tplTitle); tplWrap.appendChild(tplHint); tplWrap.appendChild(tplArea);
+  body.appendChild(tplWrap);
 
   const note = document.createElement('div');
   note.textContent = 'Settings are saved automatically and persist across sessions.';
   Object.assign(note.style, { fontSize: '12px', color: C.textMuted, marginTop: '14px' });
   body.appendChild(note);
+}
+
+// Visual SOQL builder — pick object, fields, functions, filters, order, limit.
+function renderQueryBuilderInto(host: HTMLElement, isDark: boolean, onBack: () => void, openExport: (query: string, run: boolean) => void): void {
+  host.innerHTML = '';
+  const C = {
+    border: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(31,41,55,0.2)',
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+    surface: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+    inputBg: isDark ? 'rgba(255,255,255,0.06)' : '#ffffff',
+    chip: isDark ? 'rgba(37,99,235,0.18)' : 'rgba(37,99,235,0.1)',
+    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
+    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
+    accent: '#2563eb',
+  };
+  host.appendChild(toolBackHeader(isDark, '🧱  Query Builder', onBack));
+  const root = document.createElement('div');
+  Object.assign(root.style, { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'row', overflow: 'hidden' });
+  host.appendChild(root);
+  const form = document.createElement('div');
+  Object.assign(form.style, { flex: '1', minWidth: '0', minHeight: '0', overflowY: 'auto', overflowX: 'hidden', padding: '8px 20px 16px', borderRight: `1px solid ${C.divider}` });
+  root.appendChild(form);
+
+  const inputCss = { padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none', fontFamily: 'inherit' };
+  const card = (title: string) => {
+    const c = document.createElement('div');
+    Object.assign(c.style, { marginBottom: '14px' });
+    const t = document.createElement('div'); t.textContent = title; Object.assign(t.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', color: C.textFaint, marginBottom: '6px' });
+    c.appendChild(t); form.appendChild(c); return c;
+  };
+  const mkSelect = () => { const s = document.createElement('select'); Object.assign(s.style, { ...inputCss, cursor: 'pointer' }); return s; };
+  const fillSelect = (s: HTMLSelectElement, opts: { value: string; label: string }[], keep = true) => {
+    const cur = s.value; s.innerHTML = '';
+    opts.forEach((o) => { const op = document.createElement('option'); op.value = o.value; op.textContent = o.label; s.appendChild(op); });
+    if (keep && opts.some((o) => o.value === cur)) s.value = cur;
+  };
+
+  // ── State ──
+  let objectName = '';
+  let fieldsMeta: { name: string; label: string; type: string }[] = [];
+  const checkedSet = new Set<string>();
+  const aggregates: string[] = [];
+  let fieldsMode: 'fields' | 'ALL' | 'STANDARD' | 'CUSTOM' = 'fields';
+  const whereRows: { field: HTMLSelectElement; op: HTMLSelectElement; val: HTMLInputElement }[] = [];
+
+  const fieldOptions = () => [{ value: '', label: '— field —' }, ...fieldsMeta.map((f) => ({ value: f.name, label: `${f.name}` }))];
+
+  // ── Object ──
+  const objCard = card('Object');
+  const objInput = document.createElement('input');
+  objInput.setAttribute('list', 'sf-qb-objs'); objInput.placeholder = 'Search object (e.g. Account)…'; objInput.spellcheck = false;
+  Object.assign(objInput.style, { ...inputCss, width: '260px' });
+  const dl = document.createElement('datalist'); dl.id = 'sf-qb-objs';
+  getSoqlObjects((list) => { list.forEach((o) => { const op = document.createElement('option'); op.value = o.name; op.label = o.label; dl.appendChild(op); }); });
+  objCard.appendChild(objInput); objCard.appendChild(dl);
+
+  // ── Fields ──
+  const fieldsCard = card('Fields');
+  const fControls = document.createElement('div');
+  Object.assign(fControls.style, { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '8px' });
+  const fFilter = document.createElement('input'); fFilter.placeholder = 'Filter fields…'; fFilter.spellcheck = false; Object.assign(fFilter.style, { ...inputCss, width: '180px' });
+  const modeBtns: HTMLButtonElement[] = [];
+  const mkModeBtn = (label: string, mode: typeof fieldsMode) => {
+    const b = document.createElement('button'); b.textContent = label;
+    Object.assign(b.style, { fontSize: '12px', fontWeight: '700', padding: '6px 10px', borderRadius: '7px', cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${C.border}`, background: 'transparent', color: C.textPrimary });
+    b.addEventListener('click', () => { fieldsMode = fieldsMode === mode ? 'fields' : mode; paintModes(); updatePreview(); });
+    modeBtns.push(b); return b;
+  };
+  const allBtn = mkModeBtn('FIELDS(ALL)', 'ALL');
+  const stdBtn = mkModeBtn('FIELDS(STANDARD)', 'STANDARD');
+  const cusBtn = mkModeBtn('FIELDS(CUSTOM)', 'CUSTOM');
+  const paintModes = () => { [['ALL', allBtn], ['STANDARD', stdBtn], ['CUSTOM', cusBtn]].forEach(([m, b]) => { const on = fieldsMode === m; (b as HTMLButtonElement).style.background = on ? C.chip : 'transparent'; (b as HTMLButtonElement).style.borderColor = on ? C.accent : C.border; (b as HTMLButtonElement).style.color = on ? C.accent : C.textPrimary; }); fieldList.style.opacity = fieldsMode === 'fields' ? '1' : '0.4'; };
+  fControls.appendChild(fFilter); fControls.appendChild(allBtn); fControls.appendChild(stdBtn); fControls.appendChild(cusBtn);
+  fieldsCard.appendChild(fControls);
+  const fieldList = document.createElement('div');
+  Object.assign(fieldList.style, { maxHeight: '180px', overflow: 'auto', border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '2px' });
+  fieldsCard.appendChild(fieldList);
+  const renderFieldList = () => {
+    const q = fFilter.value.trim().toLowerCase();
+    fieldList.innerHTML = '';
+    if (fieldsMeta.length === 0) { const e = document.createElement('div'); e.textContent = objectName ? 'Loading fields…' : 'Pick an object first.'; Object.assign(e.style, { padding: '8px', color: C.textMuted, fontSize: '12px' }); fieldList.appendChild(e); return; }
+    fieldsMeta.filter((f) => !q || f.name.toLowerCase().includes(q) || (f.label || '').toLowerCase().includes(q)).forEach((f) => {
+      const lab = document.createElement('label');
+      Object.assign(lab.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', color: C.textPrimary });
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = checkedSet.has(f.name); cb.style.cursor = 'pointer';
+      cb.addEventListener('change', () => { if (cb.checked) checkedSet.add(f.name); else checkedSet.delete(f.name); updatePreview(); });
+      const span = document.createElement('span'); span.innerHTML = `<span style="font-family:Fira Code,monospace">${f.name}</span> <span style="color:${C.textFaint}">${f.type}</span>`;
+      lab.appendChild(cb); lab.appendChild(span); fieldList.appendChild(lab);
+    });
+  };
+  fFilter.addEventListener('input', renderFieldList);
+
+  // ── Aggregate functions ──
+  const aggCard = card('Functions (aggregate)');
+  const aggRow = document.createElement('div'); Object.assign(aggRow.style, { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' });
+  const aggFunc = mkSelect(); fillSelect(aggFunc, ['COUNT', 'COUNT_DISTINCT', 'SUM', 'AVG', 'MIN', 'MAX'].map((f) => ({ value: f, label: f })));
+  const aggField = mkSelect();
+  const aggAdd = document.createElement('button'); aggAdd.textContent = 'Add'; Object.assign(aggAdd.style, { fontSize: '12px', fontWeight: '700', padding: '7px 12px', borderRadius: '7px', cursor: 'pointer', fontFamily: 'inherit', border: 'none', background: C.accent, color: '#fff' });
+  const aggChips = document.createElement('div'); Object.assign(aggChips.style, { display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' });
+  const renderAggChips = () => {
+    aggChips.innerHTML = '';
+    aggregates.forEach((a, i) => { const ch = document.createElement('span'); Object.assign(ch.style, { display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '3px 8px', borderRadius: '999px', background: C.chip, color: C.accent, fontSize: '12px', fontWeight: '600', fontFamily: 'Fira Code, monospace' }); ch.textContent = a; const x = document.createElement('span'); x.textContent = '×'; x.style.cursor = 'pointer'; x.addEventListener('click', () => { aggregates.splice(i, 1); renderAggChips(); updatePreview(); }); ch.appendChild(x); aggChips.appendChild(ch); });
+  };
+  aggAdd.addEventListener('click', () => { const fn = aggFunc.value; const fld = aggField.value || (fn === 'COUNT' ? '' : 'Id'); aggregates.push(fld ? `${fn}(${fld})` : 'COUNT()'); renderAggChips(); updatePreview(); });
+  aggRow.appendChild(aggFunc); aggRow.appendChild(aggField); aggRow.appendChild(aggAdd);
+  aggCard.appendChild(aggRow); aggCard.appendChild(aggChips);
+
+  // ── WHERE ──
+  const whereCard = card('Filters (WHERE)');
+  const connRow = document.createElement('div'); Object.assign(connRow.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' });
+  const connSel = mkSelect(); fillSelect(connSel, [{ value: 'AND', label: 'Match ALL (AND)' }, { value: 'OR', label: 'Match ANY (OR)' }]); connSel.addEventListener('change', updatePreview);
+  connRow.appendChild(connSel);
+  whereCard.appendChild(connRow);
+  const whereList = document.createElement('div'); whereCard.appendChild(whereList);
+  const OPS = ['=', '!=', '<', '<=', '>', '>=', 'LIKE', 'IN', 'NOT IN', 'INCLUDES', 'EXCLUDES'];
+  const addWhereRow = () => {
+    const r = document.createElement('div'); Object.assign(r.style, { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center', flexWrap: 'wrap' });
+    const fSel = mkSelect(); fillSelect(fSel, fieldOptions()); fSel.addEventListener('change', updatePreview);
+    const oSel = mkSelect(); fillSelect(oSel, OPS.map((o) => ({ value: o, label: o }))); oSel.addEventListener('change', updatePreview);
+    const vIn = document.createElement('input'); vIn.placeholder = 'value'; Object.assign(vIn.style, { ...inputCss, flex: '1', minWidth: '120px' }); vIn.addEventListener('input', updatePreview);
+    const del = document.createElement('button'); del.textContent = '×'; Object.assign(del.style, { fontSize: '16px', fontWeight: '700', padding: '4px 10px', borderRadius: '7px', cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${C.border}`, background: 'transparent', color: C.textMuted });
+    del.addEventListener('click', () => { const idx = whereRows.findIndex((w) => w.field === fSel); if (idx >= 0) whereRows.splice(idx, 1); r.remove(); updatePreview(); });
+    r.appendChild(fSel); r.appendChild(oSel); r.appendChild(vIn); r.appendChild(del);
+    whereList.appendChild(r); whereRows.push({ field: fSel, op: oSel, val: vIn });
+  };
+  const addCond = document.createElement('button'); addCond.textContent = '+ Add condition'; Object.assign(addCond.style, { fontSize: '12px', fontWeight: '700', padding: '7px 12px', borderRadius: '7px', cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${C.border}`, background: 'transparent', color: C.textPrimary });
+  addCond.addEventListener('click', () => { addWhereRow(); updatePreview(); });
+  whereCard.appendChild(addCond);
+
+  // ── ORDER BY + LIMIT ──
+  const tailCard = card('Order & Limit');
+  const tailRow = document.createElement('div'); Object.assign(tailRow.style, { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' });
+  const orderSel = mkSelect(); fillSelect(orderSel, fieldOptions()); orderSel.addEventListener('change', updatePreview);
+  const dirSel = mkSelect(); fillSelect(dirSel, [{ value: 'ASC', label: 'ASC' }, { value: 'DESC', label: 'DESC' }]); dirSel.addEventListener('change', updatePreview);
+  const limitIn = document.createElement('input'); limitIn.type = 'number'; limitIn.min = '1'; limitIn.placeholder = 'LIMIT'; Object.assign(limitIn.style, { ...inputCss, width: '110px' }); limitIn.value = '50'; limitIn.addEventListener('input', updatePreview);
+  const ob = document.createElement('span'); ob.textContent = 'ORDER BY'; Object.assign(ob.style, { fontSize: '12px', color: C.textMuted, fontWeight: '700' });
+  tailRow.appendChild(ob); tailRow.appendChild(orderSel); tailRow.appendChild(dirSel); tailRow.appendChild(limitIn);
+  tailCard.appendChild(tailRow);
+
+  const populateFieldSelects = () => { whereRows.forEach((w) => fillSelect(w.field, fieldOptions())); fillSelect(orderSel, fieldOptions()); fillSelect(aggField, [{ value: '', label: '— field —' }, ...fieldsMeta.map((f) => ({ value: f.name, label: f.name }))]); };
+
+  const loadFields = () => {
+    if (!objectName) { fieldsMeta = []; renderFieldList(); populateFieldSelects(); updatePreview(); return; }
+    fieldsMeta = []; renderFieldList();
+    getSoqlFields(objectName, (fields) => { fieldsMeta = fields; renderFieldList(); populateFieldSelects(); updatePreview(); });
+  };
+  objInput.addEventListener('change', () => { objectName = objInput.value.trim(); checkedSet.clear(); aggregates.length = 0; renderAggChips(); loadFields(); });
+
+  // ── Build query ──
+  const quoteVal = (field: string, raw: string) => {
+    const s = raw.trim();
+    if (s === '') return "''";
+    const meta = fieldsMeta.find((f) => f.name === field);
+    const type = meta?.type || 'string';
+    if (['int', 'double', 'currency', 'percent', 'long'].includes(type)) return s;
+    if (type === 'boolean') return s.toLowerCase();
+    if (/^(null|true|false)$/i.test(s)) return s;
+    if (/^'.*'$/.test(s)) return s;
+    if (/^-?\d+(\.\d+)?$/.test(s)) return s;
+    if (/^[A-Z_]+(:\-?\d+)?$/.test(s)) return s; // date literal e.g. LAST_N_DAYS:30, TODAY
+    if (['date', 'datetime'].includes(type) && /^\d{4}-\d{2}-\d{2}/.test(s)) return s;
+    return `'${s.replace(/'/g, "\\'")}'`;
+  };
+  const buildCond = (w: { field: HTMLSelectElement; op: HTMLSelectElement; val: HTMLInputElement }) => {
+    const f = w.field.value; const op = w.op.value; const v = w.val.value;
+    if (!f || v.trim() === '') return '';
+    if (['IN', 'NOT IN', 'INCLUDES', 'EXCLUDES'].includes(op)) {
+      const items = v.replace(/^\(|\)$/g, '').split(',').map((x) => quoteVal(f, x)).join(', ');
+      return `${f} ${op} (${items})`;
+    }
+    return `${f} ${op} ${quoteVal(f, v)}`;
+  };
+  const buildQuery = () => {
+    let selParts: string[];
+    if (fieldsMode !== 'fields') selParts = [`FIELDS(${fieldsMode})`];
+    else selParts = [...aggregates, ...Array.from(checkedSet)];
+    if (selParts.length === 0) selParts = ['Id'];
+    let q = `SELECT ${selParts.join(', ')} FROM ${objectName || 'ObjectName'}`;
+    const conds = whereRows.map(buildCond).filter(Boolean);
+    if (conds.length) q += ` WHERE ${conds.join(` ${connSel.value} `)}`;
+    if (orderSel.value) q += ` ORDER BY ${orderSel.value} ${dirSel.value}`;
+    if (limitIn.value && Number(limitIn.value) > 0) q += ` LIMIT ${parseInt(limitIn.value, 10)}`;
+    return q;
+  };
+
+  // ── Side panel: live query + actions ──
+  const side = document.createElement('div');
+  Object.assign(side.style, { flexShrink: '0', width: '340px', minHeight: '0', overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px 18px', background: C.surface });
+  root.appendChild(side);
+  const sideTitle = document.createElement('div');
+  sideTitle.textContent = 'Generated SOQL';
+  Object.assign(sideTitle.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', color: C.textFaint, marginBottom: '8px' });
+  side.appendChild(sideTitle);
+  const preview = document.createElement('div');
+  Object.assign(preview.style, { maxHeight: '220px', overflow: 'auto', flexShrink: '0', fontFamily: 'Fira Code, monospace', fontSize: '13px', lineHeight: '1.6', color: C.textPrimary, background: C.inputBg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' });
+  side.appendChild(preview);
+  const copyQ = document.createElement('button');
+  copyQ.textContent = 'Copy query';
+  Object.assign(copyQ.style, { fontSize: '12px', fontWeight: '600', padding: '7px 12px', borderRadius: '8px', cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${C.border}`, background: 'transparent', color: C.textMuted, marginTop: '10px' });
+  copyQ.addEventListener('click', () => { navigator.clipboard?.writeText(buildQuery()).then(() => flashToast('Query copied')).catch(() => {}); });
+  side.appendChild(copyQ);
+  const actions = document.createElement('div'); Object.assign(actions.style, { display: 'flex', gap: '8px', marginTop: '10px' });
+  const useBtn = document.createElement('button'); useBtn.textContent = 'Use query'; Object.assign(useBtn.style, { flex: '1', fontSize: '13px', fontWeight: '700', padding: '10px 14px', borderRadius: '8px', cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${C.border}`, background: 'transparent', color: C.textPrimary });
+  const runBuiltBtn = document.createElement('button'); runBuiltBtn.textContent = 'Build & Run'; Object.assign(runBuiltBtn.style, { flex: '1', fontSize: '13px', fontWeight: '700', padding: '10px 14px', borderRadius: '8px', cursor: 'pointer', fontFamily: 'inherit', border: 'none', background: C.accent, color: '#fff' });
+  useBtn.addEventListener('click', () => openExport(buildQuery(), false));
+  runBuiltBtn.addEventListener('click', () => openExport(buildQuery(), true));
+  actions.appendChild(useBtn); actions.appendChild(runBuiltBtn);
+  side.appendChild(actions);
+
+  function updatePreview() { preview.textContent = buildQuery(); }
+
+  // Init
+  addWhereRow();
+  renderFieldList();
+  paintModes();
+  updatePreview();
+  // Seed from current page object if available.
+  const seed = detectPageObject();
+  if (seed) { objInput.value = seed; objectName = seed; loadFields(); }
 }
 
 // ─── Spotlight Search ────────────────────────────────────────────────────────
@@ -2180,6 +2522,10 @@ function buildSpotlight(tabConfig: TabConfig) {
   let activeTab = tabConfig.defaultTab;
   // When set (on the Tools tab), a tool detail view is shown in-panel instead of the grid.
   let toolView: string | null = null;
+  // Active section in the ⚙ settings panel.
+  let settingsCat: 'general' | 'export' = 'general';
+  // Debug Logs live auto-refresh timer (cleared when leaving the tab).
+  let debugLiveTimer: any = null;
 
   // Results container — fixed height (overlay) so the modal doesn't resize
   // between tabs; flex-fill in full-page mode.
@@ -2341,62 +2687,26 @@ function buildSpotlight(tabConfig: TabConfig) {
   hintsRight.appendChild(reportLink);
 
   hintsBar.appendChild(brand);
-  hintsBar.appendChild(hintsRight);
 
-  // Full-page top bar: brand + logged-in user / org (populated async).
+  // Full-page footer also greets the logged-in user (name + email).
   if (fullPage) {
-    const topBar = document.createElement('div');
-    Object.assign(topBar.style, {
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px',
-      padding: '14px 32px', borderBottom: `1px solid ${T.divider}`, flexShrink: '0',
-      background: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)',
-    });
-    const brandWrap = document.createElement('div');
-    Object.assign(brandWrap.style, { display: 'flex', alignItems: 'center', gap: '10px' });
-    const logo = document.createElement('img');
-    logo.src = (globalThis as any).chrome?.runtime?.getURL ? (globalThis as any).chrome.runtime.getURL('icons/Spotlite-Icon.svg') : 'icons/Spotlite-Icon.svg';
-    logo.alt = 'Spotlite';
-    Object.assign(logo.style, { width: '26px', height: '26px', borderRadius: '6px', flexShrink: '0' });
-    const brandTxt = document.createElement('div');
-    brandTxt.innerHTML = `<span style="font-weight:800;color:${T.textPrimary}">Spotlite</span> <span style="color:${T.textFaint};font-weight:600">for Salesforce</span>`;
-    brandTxt.style.fontSize = '15px';
-    brandWrap.appendChild(logo); brandWrap.appendChild(brandTxt);
-
-    const userWrap = document.createElement('div');
-    Object.assign(userWrap.style, { display: 'flex', alignItems: 'center', gap: '10px', textAlign: 'right' });
-    const userInfo = document.createElement('div');
-    const userName = document.createElement('div');
-    userName.textContent = 'Loading…';
-    Object.assign(userName.style, { fontSize: '13px', fontWeight: '700', color: T.textPrimary });
-    const userOrg = document.createElement('div');
-    Object.assign(userOrg.style, { fontSize: '11px', color: T.textMuted });
-    userInfo.appendChild(userName); userInfo.appendChild(userOrg);
-    const avatar = document.createElement('div');
-    Object.assign(avatar.style, { width: '34px', height: '34px', borderRadius: '50%', background: T.surface, border: `1px solid ${T.modalBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: '0' });
-    avatar.textContent = '👤';
-    userWrap.appendChild(userInfo); userWrap.appendChild(avatar);
-
-    topBar.appendChild(brandWrap);
-    topBar.appendChild(userWrap);
-    modal.appendChild(topBar);
-
-    // Fetch the logged-in user + org for the bar.
+    const greet = document.createElement('div');
+    Object.assign(greet.style, { fontSize: '12px', color: T.textMuted, marginLeft: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+    greet.innerHTML = `Welcome, <span style="color:${T.textPrimary};font-weight:700">…</span>`;
+    hintsBar.appendChild(greet);
     getSfCredentials().then((creds: any) => {
-      if (!creds?.instanceUrl || !creds?.sessionId) { userName.textContent = 'Not connected'; return; }
-      const cr = (globalThis as any).chrome?.runtime;
-      cr?.sendMessage({ type: 'FETCH_USER_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { greet.innerHTML = 'Welcome, <span style="font-weight:700">Guest</span>'; return; }
+      (globalThis as any).chrome?.runtime?.sendMessage({ type: 'FETCH_USER_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
         if (r?.success && r.data) {
-          userName.textContent = r.data.displayName || r.data.name || 'User';
-          if (r.data.email || r.data.username) userOrg.textContent = r.data.email || r.data.username;
-        } else { userName.textContent = 'User'; }
-      });
-      cr?.sendMessage({ type: 'GET_ORG_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
-        if (r?.success && r.data?.Name) {
-          userOrg.textContent = `${r.data.Name}${r.data.IsSandbox ? ' · Sandbox' : ''}`;
+          const name = r.data.displayName || r.data.name || 'User';
+          const email = r.data.email || r.data.username || '';
+          greet.innerHTML = `Welcome, <span style="color:${T.textPrimary};font-weight:700">${name}</span>${email ? ` <span style="color:${T.textFaint}">· ${email}</span>` : ''}`;
         }
       });
     });
   }
+
+  hintsBar.appendChild(hintsRight);
 
   modal.appendChild(tabsContainer);   // tabs on top
   modal.appendChild(inputContainer);
@@ -2533,6 +2843,33 @@ function buildSpotlight(tabConfig: TabConfig) {
   };
 
   // Per-user "⋯" action menu (debug mode, view fields, view details).
+  // Per-user actions, reused by the ⋯ menu (overlay) and inline buttons (full page).
+  const userActions = (user: { id: string; name: string; email?: string; username?: string }): { label: string; short: string; icon: string; onClick: () => void }[] => {
+    const setDebugMode = (enabled: boolean) => {
+      getSfCredentials().then((creds: any) => {
+        if (!creds?.instanceUrl || !creds?.sessionId) { flashToast('Salesforce session not detected'); return; }
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'UPDATE_RECORD_FIELD', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, objectApiName: 'User', recordId: user.id, fieldApiName: 'UserPreferencesUserDebugModePref', value: enabled },
+          (resp: any) => {
+            if (resp?.success) flashToast(`Debug mode ${enabled ? 'enabled' : 'disabled'} for ${user.name}`);
+            else flashToast(resp?.error || 'Could not update debug mode');
+          }
+        );
+      });
+    };
+    return [
+      { label: 'View all fields', short: 'Fields', icon: '🗂️', onClick: () => showRecordDetail(user.id) },
+      { label: 'Open user detail', short: 'Detail', icon: '👤', onClick: () => {
+          const url = `${lightningOrigin()}/lightning/setup/ManageUsers/page?address=%2F${user.id}%3Fnoredirect%3D1%26isUserEntityOverride%3D1`;
+          recordRecent({ kind: 'user', icon: '👤', title: user.name, subtitle: user.email || user.username, meta: 'User', url });
+          window.open(url, '_blank');
+          hideSpotlightSearch();
+        } },
+      { label: 'Enable debug mode', short: 'Debug On', icon: '🐞', onClick: () => setDebugMode(true) },
+      { label: 'Disable debug mode', short: 'Debug Off', icon: '🚫', onClick: () => setDebugMode(false) },
+    ];
+  };
+
   const openUserMenu = (anchor: HTMLElement, user: { id: string; name: string; email?: string; username?: string }) => {
     document.getElementById('sf-user-action-menu')?.remove();
 
@@ -2550,30 +2887,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       padding: '6px', zIndex: '2147483649', fontFamily: 'Inter, system-ui, sans-serif', fontSize: '13px',
     });
 
-    const setDebugMode = (enabled: boolean) => {
-      getSfCredentials().then((creds: any) => {
-        if (!creds?.instanceUrl || !creds?.sessionId) { flashToast('Salesforce session not detected'); return; }
-        (globalThis as any).chrome.runtime.sendMessage(
-          { type: 'UPDATE_RECORD_FIELD', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, objectApiName: 'User', recordId: user.id, fieldApiName: 'UserPreferencesUserDebugModePref', value: enabled },
-          (resp: any) => {
-            if (resp?.success) flashToast(`Debug mode ${enabled ? 'enabled' : 'disabled'} for ${user.name}`);
-            else flashToast(resp?.error || 'Could not update debug mode');
-          }
-        );
-      });
-    };
-
-    const items: { label: string; icon: string; onClick: () => void }[] = [
-      { label: 'View all fields', icon: '🗂️', onClick: () => showRecordDetail(user.id) },
-      { label: 'Open user detail', icon: '👤', onClick: () => {
-          const url = `${lightningOrigin()}/lightning/setup/ManageUsers/page?address=%2F${user.id}%3Fnoredirect%3D1%26isUserEntityOverride%3D1`;
-          recordRecent({ kind: 'user', icon: '👤', title: user.name, subtitle: user.email || user.username, meta: 'User', url });
-          window.open(url, '_blank');
-          hideSpotlightSearch();
-        } },
-      { label: 'Enable debug mode', icon: '🐞', onClick: () => setDebugMode(true) },
-      { label: 'Disable debug mode', icon: '🚫', onClick: () => setDebugMode(false) },
-    ];
+    const items = userActions(user);
 
     const closeMenu = () => {
       menu.remove();
@@ -2656,6 +2970,22 @@ function buildSpotlight(tabConfig: TabConfig) {
         );
       });
     } catch { /* ignore */ }
+  };
+
+  const fetchDebugLogs = async (): Promise<any[]> => {
+    try {
+      const credentials = await getSfCredentials();
+      if (!credentials?.sessionId || !credentials?.instanceUrl) return [];
+      return await new Promise<any[]>((resolve) => {
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'GET_DEBUG_LOGS', instanceUrl: credentials.instanceUrl, sessionId: credentials.sessionId, userId: currentUserId },
+          (response: any) => resolve(response?.success && response?.data ? response.data : [])
+        );
+      });
+    } catch (error) {
+      console.error('Error fetching debug logs:', error);
+      return [];
+    }
   };
 
   const fetchSalesforceFlows = async (): Promise<any[]> => {
@@ -3261,7 +3591,25 @@ function buildSpotlight(tabConfig: TabConfig) {
           buttonGroup.appendChild(loginBtn);
           buttonGroup.appendChild(incognitoBtn);
         }
-        buttonGroup.appendChild(moreBtn);
+        // Full-page tab has room, so show every action as its own button; the
+        // overlay keeps the compact ⋯ menu.
+        if (fullPage) {
+          userActions(user).forEach((a) => {
+            const ab = document.createElement('button');
+            ab.title = a.label;
+            ab.innerHTML = `<span style="margin-right:4px">${a.icon}</span>${a.short}`;
+            Object.assign(ab.style, {
+              padding: '6px 10px', backgroundColor: T.surface, color: T.textPrimary, border: 'none',
+              borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap', flexShrink: '0',
+            });
+            ab.addEventListener('mouseover', () => { ab.style.backgroundColor = T.surfaceHover; });
+            ab.addEventListener('mouseout', () => { ab.style.backgroundColor = T.surface; });
+            ab.addEventListener('click', (e) => { e.stopPropagation(); a.onClick(); });
+            buttonGroup.appendChild(ab);
+          });
+        } else {
+          buttonGroup.appendChild(moreBtn);
+        }
         resultItem.appendChild(contentContainer);
         resultItem.appendChild(arrowIcon);
         resultItem.appendChild(buttonGroup);
@@ -3343,6 +3691,141 @@ function buildSpotlight(tabConfig: TabConfig) {
         }));
       });
       resultsContainer.appendChild(resultsList);
+
+    } else if (activeTab === 'debug') {
+      inputContainer.style.display = 'none';
+      await ensureCurrentUserId();
+      resultsContainer.innerHTML = '';
+      if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; }
+
+      const C2 = { border: T.chipBorder, divider: T.divider, headerBg: T.surface, textPrimary: T.textPrimary, textMuted: T.textMuted, textFaint: T.textFaint, zebra: T.surface, accent: T.accent, hover: T.rowHover };
+      let logs: any[] = cachedDebugLogs || [];
+      let sortKey = 'StartTime';
+      let sortDir: 'asc' | 'desc' = 'desc';
+      const selected = new Set<string>();
+      let live = false;
+
+      const root = document.createElement('div');
+      Object.assign(root.style, { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column' });
+      resultsContainer.appendChild(root);
+      const tableScroll = document.createElement('div');
+      Object.assign(tableScroll.style, { flex: '1', minHeight: '0', overflow: 'auto' });
+      root.appendChild(tableScroll);
+      const footer = document.createElement('div');
+      Object.assign(footer.style, { flexShrink: '0', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderTop: `1px solid ${C2.divider}`, background: C2.headerBg });
+      root.appendChild(footer);
+
+      const dateOf = (s: string) => { try { return new Date(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch { return ''; } };
+      const timeOf = (s: string) => { try { return new Date(s).toLocaleTimeString(); } catch { return ''; } };
+      const sortVal = (l: any) => { switch (sortKey) { case 'DurationMilliseconds': return l.DurationMilliseconds ?? 0; case 'LogLength': return l.LogLength ?? 0; case 'Operation': return (l.Operation || '').toLowerCase(); case 'User': return (l.LogUser?.Name || '').toLowerCase(); default: return new Date(l.StartTime).getTime() || 0; } };
+      const sortedLogs = () => [...logs].sort((a, b) => { const va = sortVal(a), vb = sortVal(b); const c = va < vb ? -1 : va > vb ? 1 : 0; return sortDir === 'asc' ? c : -c; });
+
+      const withLogBody = (id: string, cb: (body: string) => void) => {
+        getSfCredentials().then((creds: any) => {
+          if (!creds?.instanceUrl || !creds?.sessionId) { flashToast('Session not detected'); return; }
+          (globalThis as any).chrome.runtime.sendMessage({ type: 'FETCH_LOG_BODY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, logId: id }, (resp: any) => {
+            if (resp?.success && typeof resp.data === 'string') cb(resp.data);
+            else flashToast(resp?.error || 'Could not load log');
+          });
+        });
+      };
+      const viewLog = (id: string) => withLogBody(id, (body) => { window.open(URL.createObjectURL(new Blob([body], { type: 'text/plain' })), '_blank'); });
+      const copyLog = (id: string) => withLogBody(id, (body) => navigator.clipboard?.writeText(body).then(() => flashToast('Log copied')).catch(() => {}));
+      const downloadLog = (id: string) => withLogBody(id, (body) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([body], { type: 'text/plain' })); a.download = `${id}.log`; document.body.appendChild(a); a.click(); a.remove(); });
+
+      const COLS: { key: string; label: string; sk: string }[] = [
+        { key: 'DurationMilliseconds', label: 'Duration (ms)', sk: 'DurationMilliseconds' },
+        { key: 'LogLength', label: 'Size (Bytes)', sk: 'LogLength' },
+        { key: 'Operation', label: 'Operation', sk: 'Operation' },
+        { key: 'Date', label: 'Date', sk: 'StartTime' },
+        { key: 'Time', label: 'Time', sk: 'StartTime' },
+        { key: 'User', label: 'User', sk: 'User' },
+      ];
+      const actBtn = (label: string, title: string, onClick: () => void) => {
+        const b = document.createElement('button'); b.textContent = label; b.title = title;
+        Object.assign(b.style, { background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '15px', padding: '2px 6px', color: C2.textMuted, borderRadius: '5px' });
+        b.addEventListener('mouseover', () => { b.style.color = C2.textPrimary; b.style.background = C2.hover; });
+        b.addEventListener('mouseout', () => { b.style.color = C2.textMuted; b.style.background = 'transparent'; });
+        b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+        return b;
+      };
+
+      const renderTable = () => {
+        tableScroll.innerHTML = '';
+        const rows = sortedLogs();
+        if (rows.length === 0) {
+          const d = document.createElement('div'); d.textContent = 'No debug logs for you yet. Start a debug session (Tools › Debug Sessions) to capture logs.';
+          Object.assign(d.style, { padding: '24px', color: C2.textMuted, fontSize: '13px' }); tableScroll.appendChild(d); return;
+        }
+        const table = document.createElement('table');
+        Object.assign(table.style, { borderCollapse: 'collapse', width: '100%', fontSize: '13px' });
+        const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: C2.headerBg, color: C2.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', border: `1px solid ${C2.border}` } as Partial<CSSStyleDeclaration>;
+        const thead = document.createElement('thead'); const htr = document.createElement('tr');
+        const selTh = document.createElement('th'); Object.assign(selTh.style, thStyle);
+        const selAll = document.createElement('input'); selAll.type = 'checkbox'; selAll.style.cursor = 'pointer';
+        selAll.checked = rows.every((l) => selected.has(l.Id));
+        selAll.addEventListener('change', () => { rows.forEach((l) => { if (selAll.checked) selected.add(l.Id); else selected.delete(l.Id); }); renderTable(); updateFooter(); });
+        const selLbl = document.createElement('span'); selLbl.textContent = ' Select All'; selLbl.style.fontWeight = '700';
+        selTh.appendChild(selAll); selTh.appendChild(selLbl); htr.appendChild(selTh);
+        COLS.forEach((c) => {
+          const th = document.createElement('th'); Object.assign(th.style, thStyle); th.style.cursor = 'pointer';
+          const active = sortKey === c.sk;
+          th.innerHTML = `${c.label} <span style="color:${active ? C2.accent : C2.textFaint};font-size:11px">${active ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}</span>`;
+          th.addEventListener('click', () => { if (sortKey === c.sk) sortDir = sortDir === 'asc' ? 'desc' : 'asc'; else { sortKey = c.sk; sortDir = 'asc'; } renderTable(); });
+          htr.appendChild(th);
+        });
+        const actTh = document.createElement('th'); Object.assign(actTh.style, thStyle); actTh.textContent = 'Actions'; htr.appendChild(actTh);
+        thead.appendChild(htr); table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        const tdStyle = { padding: '6px 12px', color: C2.textPrimary, whiteSpace: 'nowrap', border: `1px solid ${C2.divider}` } as Partial<CSSStyleDeclaration>;
+        rows.forEach((l, ri) => {
+          const tr = document.createElement('tr'); if (ri % 2 === 1) tr.style.background = C2.zebra;
+          const cbTd = document.createElement('td'); Object.assign(cbTd.style, tdStyle);
+          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.style.cursor = 'pointer'; cb.checked = selected.has(l.Id);
+          cb.addEventListener('change', () => { if (cb.checked) selected.add(l.Id); else selected.delete(l.Id); updateFooter(); });
+          cbTd.appendChild(cb); tr.appendChild(cbTd);
+          [String(l.DurationMilliseconds ?? ''), (l.LogLength ?? 0).toLocaleString(), l.Operation || '', dateOf(l.StartTime), timeOf(l.StartTime), l.LogUser?.Name || ''].forEach((v) => { const td = document.createElement('td'); Object.assign(td.style, tdStyle); td.textContent = v; tr.appendChild(td); });
+          const aTd = document.createElement('td'); Object.assign(aTd.style, tdStyle);
+          aTd.appendChild(actBtn('↗', 'Open in new tab', () => viewLog(l.Id)));
+          aTd.appendChild(actBtn('📄', 'Copy log body', () => copyLog(l.Id)));
+          aTd.appendChild(actBtn('⬇', 'Download', () => downloadLog(l.Id)));
+          tr.appendChild(aTd);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody); tableScroll.appendChild(table);
+      };
+
+      // ── Footer ──
+      const liveBtn = document.createElement('button');
+      const refreshBtn = document.createElement('button'); refreshBtn.textContent = '↻'; refreshBtn.title = 'Refresh';
+      const delBtn = document.createElement('button'); delBtn.textContent = '🗑'; delBtn.title = 'Delete selected';
+      const dlSelBtn = document.createElement('button'); dlSelBtn.textContent = 'Download Selected ⬇';
+      const fstatus = document.createElement('span'); Object.assign(fstatus.style, { marginLeft: 'auto', fontSize: '12px', color: C2.textMuted });
+      const baseBtn = { fontSize: '13px', fontWeight: '600', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${C2.border}`, background: 'transparent', color: C2.textPrimary } as Partial<CSSStyleDeclaration>;
+      Object.assign(refreshBtn.style, baseBtn); Object.assign(dlSelBtn.style, baseBtn);
+      Object.assign(delBtn.style, { ...baseBtn, border: '1px solid #ef4444', color: '#ef4444' });
+      const paintLive = () => { liveBtn.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${live ? '#22c55e' : C2.textFaint};margin-right:6px"></span>LIVE`; Object.assign(liveBtn.style, { ...baseBtn, borderColor: live ? '#22c55e' : C2.border, color: live ? '#16a34a' : C2.textPrimary }); };
+      paintLive();
+      const updateFooter = () => { fstatus.textContent = `${selected.size} selected · ${logs.length} log${logs.length === 1 ? '' : 's'}`; };
+
+      const refresh = (loading: boolean) => { if (loading) fstatus.textContent = 'Loading…'; fetchDebugLogs().then((l) => { cachedDebugLogs = l; logs = l; [...selected].forEach((id) => { if (!logs.some((x) => x.Id === id)) selected.delete(id); }); renderTable(); updateFooter(); }); };
+      liveBtn.addEventListener('click', () => { live = !live; if (live) { debugLiveTimer = setInterval(() => refresh(false), 4000); } else if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; } paintLive(); });
+      refreshBtn.addEventListener('click', () => refresh(true));
+      delBtn.addEventListener('click', () => {
+        if (selected.size === 0) { flashToast('Select logs to delete'); return; }
+        if (!window.confirm(`Delete ${selected.size} log(s)? This can't be undone.`)) return;
+        getSfCredentials().then((creds: any) => {
+          if (!creds?.instanceUrl) return;
+          const ids = [...selected]; let done = 0;
+          ids.forEach((id) => (globalThis as any).chrome.runtime.sendMessage({ type: 'DELETE_APEX_LOG', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, logId: id }, () => { done++; if (done === ids.length) { selected.clear(); flashToast('Deleted'); refresh(true); } }));
+        });
+      });
+      dlSelBtn.addEventListener('click', () => { if (selected.size === 0) { flashToast('Select logs to download'); return; } [...selected].forEach((id) => downloadLog(id)); });
+      [liveBtn, refreshBtn, delBtn, dlSelBtn, fstatus].forEach((el) => footer.appendChild(el));
+
+      renderTable(); updateFooter();
+      refresh(logs.length === 0);
+      return;
 
     } else if (activeTab === 'flows') {
       if (!cachedFlows) cachedFlows = await fetchSalesforceFlows();
@@ -3459,13 +3942,13 @@ function buildSpotlight(tabConfig: TabConfig) {
       // A tool's detail view is shown in-panel (with a "Tools" back button).
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
-      // The search bar is dead weight inside the query editor — hide it for Export.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'exportsettings') ? 'none' : 'flex';
+      // The search bar is dead weight inside the query editor — hide it for Export/Builder.
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
-        if (toolView === 'export') { renderExportInto(resultsContainer, isDark, onBack, () => { toolView = 'exportsettings'; performSearch(); }); return; }
-        if (toolView === 'exportsettings') { renderExportSettingsInto(resultsContainer, isDark, () => { toolView = 'export'; performSearch(); }); return; }
+        if (toolView === 'export') { renderExportInto(resultsContainer, isDark, onBack, () => { toolView = 'querybuilder'; performSearch(); }); return; }
+        if (toolView === 'querybuilder') { renderQueryBuilderInto(resultsContainer, isDark, () => { toolView = 'export'; performSearch(); }, (query, run) => { pendingExportQuery = query; pendingExportRun = run; toolView = 'export'; performSearch(); }); return; }
         if (toolView === 'orgdetails') { renderOrgDetailsInto(resultsContainer, isDark, onBack); return; }
         if (toolView === 'release') { renderReleaseInfoInto(resultsContainer, isDark, onBack); return; }
         if (toolView === 'apiusage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '📊  API Usage', fields: API_FIELDS }); return; }
@@ -3487,6 +3970,15 @@ function buildSpotlight(tabConfig: TabConfig) {
           },
         },
         {
+          id: 'sfhome', icon: '🏠', label: 'Salesforce Home', desc: 'Open Lightning home',
+          run: () => {
+            const url = `${lightningOrigin()}/lightning/page/home`;
+            recordRecent({ kind: 'tool', icon: '🏠', title: 'Salesforce Home', subtitle: 'Lightning home', meta: 'Tool', url });
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        },
+        {
           id: 'classic', icon: '🕹️', label: 'Switch to Classic', desc: 'Open Salesforce Classic',
           run: () => {
             const url = `${lightningOrigin()}/ltng/switcher?destination=classic`;
@@ -3497,6 +3989,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'export', icon: '📤', label: 'Export Data', desc: 'Run SOQL & export CSV',
           run: () => { searchInput.value = ''; toolView = 'export'; performSearch(); },
+        },
+        {
+          id: 'querybuilder', icon: '🧱', label: 'Query Builder', desc: 'Build SOQL visually',
+          run: () => { searchInput.value = ''; toolView = 'querybuilder'; performSearch(); },
         },
         {
           id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'View this org’s info',
@@ -3655,6 +4151,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     activeTab = id;
     selectedIndex = -1;
     toolView = null;
+    if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; }
     Object.keys(tabButtons).forEach(tid => styleTabButton(tabButtons[tid], tid === id));
 
     if (id === '__settings') {
@@ -3745,11 +4242,13 @@ function buildSpotlight(tabConfig: TabConfig) {
 
     const visibleIds = tabConfig.order.filter(id => !tabConfig.hidden.includes(id) && ALL_SPOTLIGHT_TABS.some(t => t.id === id));
 
+    // The full-page tab has room for every tab; the overlay collapses extras.
+    const maxVisible = fullPage ? visibleIds.length : MAX_VISIBLE_TABS;
     let primary = visibleIds;
     let overflow: string[] = [];
-    if (visibleIds.length > MAX_VISIBLE_TABS) {
-      primary = visibleIds.slice(0, MAX_VISIBLE_TABS);
-      overflow = visibleIds.slice(MAX_VISIBLE_TABS);
+    if (visibleIds.length > maxVisible) {
+      primary = visibleIds.slice(0, maxVisible);
+      overflow = visibleIds.slice(maxVisible);
       // Ensure the active tab is always visible — swap it into the last slot.
       if (activeTab && overflow.includes(activeTab)) {
         const lastPrimary = primary[primary.length - 1];
@@ -3779,8 +4278,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       tabsContainer.appendChild(moreBtn);
     }
 
-    const gear = makeTabButton('⚙');
-    gear.style.fontSize = '18px';
+    const gear = makeTabButton('Settings', '⚙');
     gear.style.marginLeft = 'auto';
     gear.title = 'Settings';
     styleTabButton(gear, activeTab === '__settings');
@@ -3792,9 +4290,55 @@ function buildSpotlight(tabConfig: TabConfig) {
   // ─── Settings panel (reorder / default / hide) ─────────────
   const renderSettingsPanel = () => {
     resultsContainer.innerHTML = '';
-    const wrap = document.createElement('div');
-    wrap.style.padding = '20px 28px';
+    const rootS = document.createElement('div');
+    Object.assign(rootS.style, { display: 'flex', height: '100%', minHeight: '0' });
+    resultsContainer.appendChild(rootS);
 
+    // Sidebar: categories grouped by feature.
+    const sidebar = document.createElement('div');
+    Object.assign(sidebar.style, { width: '168px', flexShrink: '0', borderRight: `1px solid ${T.divider}`, padding: '16px 10px', display: 'flex', flexDirection: 'column', gap: '4px' });
+    rootS.appendChild(sidebar);
+    const navItem = (id: 'general' | 'export', icon: string, label: string) => {
+      const on = settingsCat === id;
+      const b = document.createElement('button');
+      b.innerHTML = `<span style="margin-right:8px">${icon}</span>${label}`;
+      Object.assign(b.style, { display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: '13px', fontWeight: on ? '700' : '600', background: on ? T.surface : 'transparent', color: on ? T.textPrimary : T.textMuted });
+      b.addEventListener('mouseover', () => { if (settingsCat !== id) b.style.background = T.surface; });
+      b.addEventListener('mouseout', () => { if (settingsCat !== id) b.style.background = 'transparent'; });
+      b.addEventListener('click', () => { settingsCat = id; renderSettingsPanel(); });
+      sidebar.appendChild(b);
+    };
+    navItem('general', '🧩', 'General');
+    navItem('export', '📤', 'Data Export');
+
+    // Content for the selected category.
+    const content = document.createElement('div');
+    Object.assign(content.style, { flex: '1', minWidth: '0', minHeight: '0', overflow: 'auto', padding: '20px 28px' });
+    rootS.appendChild(content);
+
+    if (settingsCat === 'export') {
+      const exHeading = document.createElement('div');
+      exHeading.textContent = 'Data Export';
+      Object.assign(exHeading.style, { fontSize: '16px', fontWeight: '700', color: T.textPrimary, marginBottom: '4px' });
+      content.appendChild(exHeading);
+      const exSub = document.createElement('div');
+      exSub.textContent = 'Preferences for the Export Data & Query Builder tools';
+      Object.assign(exSub.style, { fontSize: '13px', color: T.textMuted, marginBottom: '10px' });
+      content.appendChild(exSub);
+      const exBody = document.createElement('div');
+      Object.assign(exBody.style, { display: 'flex', flexDirection: 'column', gap: '2px' });
+      content.appendChild(exBody);
+      appendExportSettings(exBody, {
+        border: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(31,41,55,0.2)',
+        divider: T.divider,
+        inputBg: isDark ? 'rgba(255,255,255,0.06)' : '#ffffff',
+        textPrimary: T.textPrimary, textMuted: T.textMuted, accent: T.accent,
+      });
+      return;
+    }
+
+    // ── General: customize tabs ──
+    const wrap = content;
     const heading = document.createElement('div');
     heading.textContent = 'Customize tabs';
     heading.style.fontSize = '16px';
@@ -3955,8 +4499,6 @@ function buildSpotlight(tabConfig: TabConfig) {
       renderTabBar();
     });
     wrap.appendChild(reset);
-
-    resultsContainer.appendChild(wrap);
   };
 
   // ─── Input + keyboard wiring ───────────────────────────────
@@ -4016,6 +4558,9 @@ function buildSpotlight(tabConfig: TabConfig) {
 }
 
 function hideSpotlightSearch() {
+  // In the full-page tab the spotlight IS the page — hiding it would blank the
+  // tab, so keep it visible when a result opens something in a new tab.
+  if (SPOTLIGHT_PAGE) return;
   const spotlightContainer = document.getElementById('sf-log-analyzer-spotlight-container');
   const modalContent = document.getElementById('sf-log-analyzer-modal-content');
   if (spotlightContainer) {
