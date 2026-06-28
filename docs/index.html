@@ -10,6 +10,7 @@
     <!-- SEO Meta Tags -->
     <meta name="description" content="A powerful Chrome extension for Salesforce developers. Visualize Apex debug logs, track governor limits, run performance insights, manage debug sessions, and navigate Setup with Spotlight search — all without leaving Salesforce.">
     <meta name="google-site-verification" content="jfI4i9wFAgnqKfiCIjDuIHzJEMtcaGH0z7zEyvCAmEo" />
+    <meta name="google-site-verification" content="cfRxhZvGBgPty9I_hY7Cod661yrFkGb5JGKnjVO0TEA" />
     <meta property="og:title" content="SF Spotlight — Visualize & Debug Salesforce Apex Logs">
     <meta property="og:description" content="Transform chaotic Apex debug logs into structured, actionable insights right inside your browser.">
     <meta property="og:type" content="website">
@@ -239,6 +240,25 @@
                         A command-palette for Salesforce. Press one shortcut and instantly jump to Setup pages — Custom Objects, Fields, Users, Profiles, Permission Sets, API Limits, Custom Metadata and more — in a new tab. Fully keyboard-navigable with arrow keys and Enter.
                     </p>
                     <a href="docs.html#spotlight" class="inline-flex items-center gap-2 mt-5 text-brand-400 hover:text-brand-300 text-sm font-semibold">Learn more <i class="fa-solid fa-arrow-right text-xs"></i></a>
+                </div>
+
+                <!-- Log Explorer & Analyzer (prominent, new in 1.7) -->
+                <div class="md:col-span-3 glass-panel p-8 rounded-xl border-2 border-emerald-500/40 hover:border-emerald-500 transition-all group relative overflow-hidden shadow-[0_0_30px_rgba(16,185,129,0.08)] hover:shadow-[0_0_40px_rgba(16,185,129,0.18)] reveal">
+                    <div class="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-bl-full -z-10 group-hover:scale-110 transition-transform duration-500"></div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-14 h-14 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg flex items-center justify-center text-white text-2xl shadow-lg shadow-emerald-500/30"><i class="fa-solid fa-chart-gantt"></i></div>
+                        <span class="text-xs font-mono bg-emerald-500/20 text-emerald-300 px-2 py-1 rounded border border-emerald-500/30">New in v1.7</span>
+                    </div>
+                    <h4 class="text-2xl font-bold text-white mb-3">Log Explorer &amp; Apex Log Analyzer</h4>
+                    <p class="text-gray-300 text-base leading-relaxed max-w-3xl mb-5">Browse your debug logs in a sortable, live-refreshing table, then hit <strong>Analyze</strong> on any log for a full visual breakdown — five tabs, no copy-pasting into another tool.</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 text-sm">
+                        <div class="rounded-lg bg-dark-surface/60 border border-dark-border p-4"><div class="text-purple-400 mb-2"><i class="fa-solid fa-fire"></i></div><div class="font-semibold text-white mb-1">Timeline</div><div class="text-gray-400 text-xs leading-relaxed">Zoom/pan flame chart with an overview strip &amp; hover tooltips.</div></div>
+                        <div class="rounded-lg bg-dark-surface/60 border border-dark-border p-4"><div class="text-blue-400 mb-2"><i class="fa-solid fa-sitemap"></i></div><div class="font-semibold text-white mb-1">Call Tree</div><div class="text-gray-400 text-xs leading-relaxed">Time-order / aggregated / bottom-up, sortable &amp; filterable.</div></div>
+                        <div class="rounded-lg bg-dark-surface/60 border border-dark-border p-4"><div class="text-amber-400 mb-2"><i class="fa-solid fa-code"></i></div><div class="font-semibold text-white mb-1">Analysis</div><div class="text-gray-400 text-xs leading-relaxed">Methods rolled up by self-time, with caller drill-down.</div></div>
+                        <div class="rounded-lg bg-dark-surface/60 border border-dark-border p-4"><div class="text-green-400 mb-2"><i class="fa-solid fa-database"></i></div><div class="font-semibold text-white mb-1">Database</div><div class="text-gray-400 text-xs leading-relaxed">Every SOQL &amp; DML with selectivity, rows and timing.</div></div>
+                        <div class="rounded-lg bg-dark-surface/60 border border-dark-border p-4"><div class="text-gray-300 mb-2"><i class="fa-solid fa-file-lines"></i></div><div class="font-semibold text-white mb-1">Raw Log</div><div class="text-gray-400 text-xs leading-relaxed">The unparsed log with instant line filtering.</div></div>
+                    </div>
+                    <a href="docs.html#log-explorer" class="inline-flex items-center gap-2 mt-5 text-emerald-400 hover:text-emerald-300 text-sm font-semibold">Learn more <i class="fa-solid fa-arrow-right text-xs"></i></a>
                 </div>
 
                 <!-- Auto-detection -->

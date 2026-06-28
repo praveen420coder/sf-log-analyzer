@@ -76,6 +76,7 @@
                         <a href="#spotlight" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Spotlight Search</a>
                         <a href="#record-id" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Open records by ID</a>
                         <a href="#record-viewer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Record viewer & edit</a>
+                        <a href="#log-explorer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Log Explorer & Analyzer</a>
                         <a href="#dashboard" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Dashboard & Logs</a>
                         <a href="#detail" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Detail View</a>
                         <a href="#tree" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Execution Tree</a>
@@ -107,19 +108,21 @@
                 <section id="whatsnew" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
-                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.4.0</span>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.7.0</span>
                     </div>
                     <h3>What's New</h3>
-                    <p>The latest release makes record work dramatically faster and brings a fresh look to Spotlight.</p>
-                    <h4>v1.4.0 — Records, inline editing & dark mode</h4>
+                    <p>The biggest release yet: a brand-new <strong>Log Explorer</strong> and a full visual <strong>Apex Log Analyzer</strong> built right into the panel.</p>
+                    <h4>v1.7.0 — Log Explorer &amp; the Apex Log Analyzer</h4>
                     <ul>
-                        <li><strong>Open records by ID</strong> — paste a 15- or 18-character record ID into Spotlight and instantly open the record or jump to its full field view. IDs are validated (18-char checksum) before any action is offered.</li>
-                        <li><strong>Record field viewer</strong> — press <code>Alt+D</code> (<code>Option+D</code> on Mac) on any record page to open a wide viewer showing <em>every</em> field on the object with its label, API name, type and value.</li>
-                        <li><strong>Access-aware</strong> — fields you can't read are shown by name but greyed out and marked "No access," so you always see the full picture of the object.</li>
-                        <li><strong>Inline edit &amp; save</strong> — copy any value, or edit updateable fields in place (text, checkbox and picklist inputs) and save straight back to Salesforce. Validation and permission errors are surfaced inline.</li>
-                        <li><strong>Dark mode for Spotlight</strong> — choose a light or dark Spotlight theme in Settings.</li>
-                        <li><strong>Report an issue</strong> — quick feedback links in the Spotlight footer and the log panel.</li>
+                        <li><strong>Log Explorer</strong> — your debug logs in a sortable table with Select-All, per-row open / copy / download, a live auto-refresh toggle, bulk delete, and a one-click <strong>Analyze</strong> button on every row.</li>
+                        <li><strong>Apex Log Analyzer</strong> — Analyze opens a full-screen breakdown with the log's size, duration and debug-level chips, across five tabs.</li>
+                        <li><strong>Timeline</strong> — a zoomable, pannable canvas flame chart with a top overview/minimap strip, in-bar labels, a time axis and rich hover tooltips (timings, DML/SOQL counts &amp; rows vs governor limits). Click a bar to jump to the Call Tree.</li>
+                        <li><strong>Call Tree</strong> — the execution tree in Time Order, Aggregated or Bottom-Up, with tristate sortable columns, Expand/Collapse, and Details / Debug-Only / Type filters.</li>
+                        <li><strong>Analysis</strong> — a bottom-up aggregated tree grouping every method/operation by self-time, with Group&nbsp;by, Min/Max time and namespace header filters.</li>
+                        <li><strong>Database</strong> — every SOQL query (with selectivity, rows and time) and DML operation extracted into grouped tables.</li>
+                        <li><strong>Raw Log</strong> — read the unparsed log line-by-line with instant filtering, copy and download.</li>
                     </ul>
+                    <p class="text-sm text-gray-500">Built on the open-source, BSD-3-licensed apex-log-parser by Certinia. Earlier highlights (v1.4): open records by ID, the record field viewer with inline edit, and Spotlight dark mode.</p>
                 </section>
 
                 <!-- Overview -->
@@ -210,6 +213,25 @@
                         <li>On save the single field is written back to Salesforce. If Salesforce rejects it (field-level security, a validation rule, a required field), the exact error is shown inline so you can correct it.</li>
                     </ul>
                     <p>Reference (lookup) fields render as links you can follow to the related record.</p>
+                </section>
+
+                <!-- Log Explorer & Analyzer -->
+                <section id="log-explorer" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 mb-3"><i class="fa-solid fa-chart-gantt"></i></div>
+                    <h3>Log Explorer &amp; the Apex Log Analyzer</h3>
+                    <p>The <strong>Log Explorer</strong> tab lists the current user's Apex debug logs in a sortable table. Select logs with checkboxes, sort by any column, toggle <strong>Live</strong> to auto-refresh, and use the per-row actions to open, copy or download a log — or delete the selected ones in bulk. Every row has an <strong>Analyze</strong> button.</p>
+                    <p>Clicking <strong>Analyze</strong> parses the log and opens a full-screen analyzer, with a header showing the log's size, total duration and the active debug-level chips. It's organised into five tabs:</p>
+                    <h4>Timeline</h4>
+                    <p>A canvas <em>flame chart</em> of the whole transaction. An overview strip across the top shows the entire log with a draggable viewport box; the main chart draws each code unit, method, SOQL and DML as a coloured, labelled bar by depth. Scroll to zoom, drag to pan, and hover for a tooltip with timings, DML/SOQL counts and rows against governor limits. Click a bar to jump to it in the Call Tree.</p>
+                    <h4>Call Tree</h4>
+                    <p>The execution hierarchy as an expandable tree. Switch between <strong>Time Order</strong>, <strong>Aggregated</strong> and <strong>Bottom-Up</strong>, sort any column (tristate), Expand/Collapse all, and filter with <strong>Details</strong>, <strong>Debug Only</strong> and a <strong>Type</strong> picker. Columns cover DML/SOQL counts, rows, exceptions thrown, and total &amp; self time with percentages.</p>
+                    <h4>Analysis</h4>
+                    <p>A bottom-up aggregation that rolls every method and operation up by self-time, with each entry expandable to reveal its callers. Group by namespace or type, and narrow the list with Min/Max time and namespace header filters.</p>
+                    <h4>Database</h4>
+                    <p>Every <strong>SOQL</strong> query (with selectivity, row count, time taken and aggregations) and every <strong>DML</strong> operation (with row counts and timing) pulled into focused tables — the fastest way to spot a slow or non-selective query.</p>
+                    <h4>Raw Log</h4>
+                    <p>The complete, unparsed log line-by-line with instant line filtering, plus copy and download.</p>
+                    <p class="text-sm text-gray-500">The analyzer is powered by the open-source, BSD-3-licensed <code>apex-log-parser</code> by Certinia.</p>
                 </section>
 
                 <!-- Dashboard -->

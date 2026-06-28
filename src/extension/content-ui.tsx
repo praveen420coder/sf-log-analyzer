@@ -1,5 +1,6 @@
 // Content script - injects iframe to load the React app
 import { setupLinks } from './links';
+import { renderLogAnalyzerInto } from './log-analyzer/logAnalyzerView';
 
 interface ExtensionSettings {
   position: 'right' | 'left';
@@ -131,7 +132,7 @@ const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
   { id: 'users', label: 'Users', placeholder: 'Search Users...', icon: '👤' },
   { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
   { id: 'flows', label: 'Flows', placeholder: 'Search Flows...', icon: '⚡' },
-  { id: 'debug', label: 'Debug Logs', placeholder: 'Search your debug logs...', icon: '🐞' },
+  { id: 'debug', label: 'Log Explorer', placeholder: 'Search your debug logs...', icon: '🐞' },
   { id: 'apps', label: 'Apps & Tabs', placeholder: 'Search apps & tabs...', icon: '🚀' }
 ];
 
@@ -1011,11 +1012,11 @@ function showRecordDetail(recordId: string): void {
 const WHATS_NEW_VERSION_KEY = 'sf_log_analyzer_last_seen_version';
 
 const WHATS_NEW: { icon: string; title: string; desc: string }[] = [
-  { icon: '🔗', title: 'Open records by Id', desc: 'Paste a 15/18-char record Id into Spotlight to open the record or view all its fields.' },
-  { icon: '🗂️', title: 'Record field viewer', desc: 'Press Alt+D (Option+D on Mac) on any record to see every field, value and type you can access.' },
-  { icon: '✏️', title: 'Inline edit & save', desc: 'Edit field values right in the viewer and save back to Salesforce — with clear errors if a save is rejected.' },
-  { icon: '🌓', title: 'Dark mode for Spotlight', desc: 'Switch the Spotlight theme between light and dark in Settings.' },
-  { icon: '🐞', title: 'Report an issue', desc: 'Send feedback straight from the Spotlight footer and the log panel.' },
+  { icon: '🔎', title: 'Log Explorer', desc: 'Your debug logs in a sortable table — open, copy, download, delete in bulk, or live-refresh.' },
+  { icon: '📊', title: 'Apex Log Analyzer', desc: 'Click Analyze on any log for a full breakdown across five tabs.' },
+  { icon: '🔥', title: 'Timeline flame chart', desc: 'A zoomable, pannable canvas timeline with an overview strip and rich hover tooltips.' },
+  { icon: '🌳', title: 'Call Tree, Analysis & Database', desc: 'Sortable call tree, bottom-up method aggregation, and grouped SOQL/DML views.' },
+  { icon: '📄', title: 'Raw Log tab', desc: 'Read and filter the unparsed log line-by-line, then copy or download it.' },
 ];
 
 function showWhatsNew(version: string): void {
@@ -3732,6 +3733,18 @@ function buildSpotlight(tabConfig: TabConfig) {
       const viewLog = (id: string) => withLogBody(id, (body) => { window.open(URL.createObjectURL(new Blob([body], { type: 'text/plain' })), '_blank'); });
       const copyLog = (id: string) => withLogBody(id, (body) => navigator.clipboard?.writeText(body).then(() => flashToast('Log copied')).catch(() => {}));
       const downloadLog = (id: string) => withLogBody(id, (body) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([body], { type: 'text/plain' })); a.download = `${id}.log`; document.body.appendChild(a); a.click(); a.remove(); });
+      const openAnalyzer = (id: string, name: string) => {
+        if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; }
+        resultsContainer.innerHTML = '';
+        const loading = document.createElement('div');
+        Object.assign(loading.style, { padding: '24px', color: C2.textMuted, fontSize: '13px' });
+        loading.textContent = 'Loading log…';
+        resultsContainer.appendChild(loading);
+        withLogBody(id, (body) => {
+          resultsContainer.innerHTML = '';
+          renderLogAnalyzerInto(resultsContainer, body, { isDark: currentSpotlightTheme === 'dark', logName: name, onBack: () => performSearch() });
+        });
+      };
 
       const COLS: { key: string; label: string; sk: string }[] = [
         { key: 'DurationMilliseconds', label: 'Duration (ms)', sk: 'DurationMilliseconds' },
@@ -3786,6 +3799,13 @@ function buildSpotlight(tabConfig: TabConfig) {
           cbTd.appendChild(cb); tr.appendChild(cbTd);
           [String(l.DurationMilliseconds ?? ''), (l.LogLength ?? 0).toLocaleString(), l.Operation || '', dateOf(l.StartTime), timeOf(l.StartTime), l.LogUser?.Name || ''].forEach((v) => { const td = document.createElement('td'); Object.assign(td.style, tdStyle); td.textContent = v; tr.appendChild(td); });
           const aTd = document.createElement('td'); Object.assign(aTd.style, tdStyle);
+          const anBtn = document.createElement('button');
+          anBtn.textContent = 'Analyze';
+          Object.assign(anBtn.style, { fontSize: '12px', fontWeight: '700', padding: '3px 10px', borderRadius: '6px', border: `1px solid ${C2.accent}`, background: 'transparent', color: C2.accent, cursor: 'pointer', marginRight: '6px', fontFamily: 'inherit' });
+          anBtn.addEventListener('mouseover', () => { anBtn.style.background = C2.accent; anBtn.style.color = '#fff'; });
+          anBtn.addEventListener('mouseout', () => { anBtn.style.background = 'transparent'; anBtn.style.color = C2.accent; });
+          anBtn.addEventListener('click', (e) => { e.stopPropagation(); openAnalyzer(l.Id, l.Operation || l.Id); });
+          aTd.appendChild(anBtn);
           aTd.appendChild(actBtn('↗', 'Open in new tab', () => viewLog(l.Id)));
           aTd.appendChild(actBtn('📄', 'Copy log body', () => copyLog(l.Id)));
           aTd.appendChild(actBtn('⬇', 'Download', () => downloadLog(l.Id)));
