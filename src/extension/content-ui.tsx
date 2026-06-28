@@ -128,7 +128,7 @@ const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
   { id: 'setup', label: 'Setup', placeholder: 'Search Salesforce Setup...', icon: '🏠' },
   { id: 'recent', label: 'Recent', placeholder: 'Search recently opened...', icon: '🕘' },
   { id: 'objects', label: 'Objects', placeholder: 'Search Objects...', icon: '📦' },
-  { id: 'metadata', label: 'Metadata', placeholder: 'Search Custom Metadata & Settings...', icon: '🧩' },
+  { id: 'metadata', label: 'Metadata Explorer', placeholder: 'Search metadata types...', icon: '🧩' },
   { id: 'users', label: 'Users', placeholder: 'Search Users...', icon: '👤' },
   { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
   { id: 'flows', label: 'Flows', placeholder: 'Search Flows...', icon: '⚡' },
@@ -423,10 +423,36 @@ loadToolsState(() => applyAllToolToggles());
 let cachedUsers: any[] | null = null;
 let cachedFlows: any[] | null = null;
 let cachedObjects: any[] | null = null;
-let cachedMetadata: any[] | null = null;
 let cachedSecurity: any[] | null = null;
 let cachedDebugLogs: any[] | null = null;
 let currentUserId: string | null = null;
+
+// ─── Metadata Explorer catalog ───────────────────────────────────────────────
+// Each entry: a metadata type, its query (tooling or data API) and table columns.
+interface MetaColumn { key: string; label: string; }
+interface MetaType { id: string; label: string; icon: string; tooling: boolean; soql: string; columns: MetaColumn[]; }
+const METADATA_CATALOG: MetaType[] = [
+  { id: 'ApexClass', label: 'Apex Classes', icon: '📦', tooling: true, soql: "SELECT Name, ApiVersion, LengthWithoutComments, Status, LastModifiedDate FROM ApexClass ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'ApiVersion', label: 'API' }, { key: 'LengthWithoutComments', label: 'Length' }, { key: 'Status', label: 'Status' }, { key: 'LastModifiedDate', label: 'Modified' }] },
+  { id: 'ApexTrigger', label: 'Apex Triggers', icon: '⚡', tooling: true, soql: "SELECT Name, TableEnumOrId, ApiVersion, Status, LastModifiedDate FROM ApexTrigger ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'TableEnumOrId', label: 'Object' }, { key: 'ApiVersion', label: 'API' }, { key: 'Status', label: 'Status' }, { key: 'LastModifiedDate', label: 'Modified' }] },
+  { id: 'ApexPage', label: 'Visualforce Pages', icon: '📄', tooling: true, soql: "SELECT Name, MasterLabel, ApiVersion, LastModifiedDate FROM ApexPage ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }, { key: 'LastModifiedDate', label: 'Modified' }] },
+  { id: 'ApexComponent', label: 'VF Components', icon: '🧱', tooling: true, soql: "SELECT Name, MasterLabel, ApiVersion, LastModifiedDate FROM ApexComponent ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }, { key: 'LastModifiedDate', label: 'Modified' }] },
+  { id: 'AuraDefinitionBundle', label: 'Aura Components', icon: '🟦', tooling: true, soql: "SELECT DeveloperName, MasterLabel, ApiVersion, LastModifiedDate FROM AuraDefinitionBundle ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }, { key: 'LastModifiedDate', label: 'Modified' }] },
+  { id: 'LightningComponentBundle', label: 'Lightning Web Components', icon: '🔆', tooling: true, soql: "SELECT DeveloperName, MasterLabel, ApiVersion FROM LightningComponentBundle ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }] },
+  { id: 'CustomObject', label: 'Custom Objects', icon: '🗃️', tooling: true, soql: "SELECT DeveloperName, NamespacePrefix, ManageableState FROM CustomObject ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'NamespacePrefix', label: 'Namespace' }, { key: 'ManageableState', label: 'State' }] },
+  { id: 'CustomField', label: 'Custom Fields', icon: '🔤', tooling: true, soql: "SELECT DeveloperName, TableEnumOrId, NamespacePrefix FROM CustomField ORDER BY TableEnumOrId LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Field' }, { key: 'TableEnumOrId', label: 'Object' }, { key: 'NamespacePrefix', label: 'Namespace' }] },
+  { id: 'ValidationRule', label: 'Validation Rules', icon: '✅', tooling: true, soql: "SELECT ValidationName, Active, ErrorMessage FROM ValidationRule ORDER BY ValidationName LIMIT 2000", columns: [{ key: 'ValidationName', label: 'Name' }, { key: 'Active', label: 'Active' }, { key: 'ErrorMessage', label: 'Error Message' }] },
+  { id: 'FlowDefinitionView', label: 'Flows', icon: '🌊', tooling: false, soql: "SELECT ApiName, Label, ProcessType, TriggerType, IsActive FROM FlowDefinitionView ORDER BY Label LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'ApiName', label: 'API Name' }, { key: 'ProcessType', label: 'Type' }, { key: 'TriggerType', label: 'Trigger' }, { key: 'IsActive', label: 'Active' }] },
+  { id: 'PermissionSet', label: 'Permission Sets', icon: '🛡️', tooling: false, soql: "SELECT Name, Label, IsOwnedByProfile FROM PermissionSet ORDER BY Name LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'Name', label: 'API Name' }, { key: 'IsOwnedByProfile', label: 'Profile-owned' }] },
+  { id: 'Profile', label: 'Profiles', icon: '👤', tooling: false, soql: "SELECT Name, UserType FROM Profile ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'UserType', label: 'User Type' }] },
+  { id: 'CustomPermission', label: 'Custom Permissions', icon: '🔑', tooling: true, soql: "SELECT DeveloperName, MasterLabel, NamespacePrefix FROM CustomPermission ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'NamespacePrefix', label: 'Namespace' }] },
+  { id: 'ExternalString', label: 'Custom Labels', icon: '🏷️', tooling: true, soql: "SELECT Name, MasterLabel, Category, Language FROM ExternalString ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'Category', label: 'Category' }, { key: 'Language', label: 'Lang' }] },
+  { id: 'StaticResource', label: 'Static Resources', icon: '📎', tooling: true, soql: "SELECT Name, ContentType, BodyLength, LastModifiedDate FROM StaticResource ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'ContentType', label: 'Content Type' }, { key: 'BodyLength', label: 'Size (bytes)' }, { key: 'LastModifiedDate', label: 'Modified' }] },
+  { id: 'EmailTemplate', label: 'Email Templates', icon: '✉️', tooling: false, soql: "SELECT Name, DeveloperName, FolderName, TemplateType FROM EmailTemplate ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'DeveloperName', label: 'API Name' }, { key: 'FolderName', label: 'Folder' }, { key: 'TemplateType', label: 'Type' }] },
+  { id: 'Report', label: 'Reports', icon: '📊', tooling: false, soql: "SELECT Name, FolderName, Format FROM Report ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'FolderName', label: 'Folder' }, { key: 'Format', label: 'Format' }] },
+  { id: 'Dashboard', label: 'Dashboards', icon: '📈', tooling: false, soql: "SELECT Title, FolderName FROM Dashboard ORDER BY Title LIMIT 2000", columns: [{ key: 'Title', label: 'Title' }, { key: 'FolderName', label: 'Folder' }] },
+  { id: 'CronTrigger', label: 'Scheduled Jobs', icon: '⏰', tooling: false, soql: "SELECT CronJobDetail.Name, State, NextFireTime, PreviousFireTime FROM CronTrigger ORDER BY NextFireTime LIMIT 2000", columns: [{ key: 'CronJobDetail.Name', label: 'Job' }, { key: 'State', label: 'State' }, { key: 'NextFireTime', label: 'Next Run' }, { key: 'PreviousFireTime', label: 'Last Run' }] },
+  { id: 'ApexTestRunResult', label: 'Test History', icon: '🧪', tooling: true, soql: "SELECT JobName, Status, StartTime, TestTime, ClassesCompleted, MethodsCompleted, MethodsFailed FROM ApexTestRunResult ORDER BY StartTime DESC LIMIT 1000", columns: [{ key: 'JobName', label: 'Job' }, { key: 'Status', label: 'Status' }, { key: 'StartTime', label: 'Started' }, { key: 'TestTime', label: 'Time (ms)' }, { key: 'MethodsCompleted', label: 'Passed' }, { key: 'MethodsFailed', label: 'Failed' }] },
+];
 let cachedApps: any[] | null = null;
 
 // Full-page mode: spotlight.html?host=<sfHost> opens in its own tab, so there's
@@ -1100,7 +1126,7 @@ function showWhatsNew(version: string): void {
   Object.assign(footer.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '16px 24px', borderTop: `1px solid ${C.divider}` });
   const docsLink = document.createElement('a');
   docsLink.textContent = 'View docs ↗';
-  docsLink.href = 'https://praveen420coder.github.io/sf-log-analyzer/';
+  docsLink.href = 'https://sfspotlight.vercel.app/docs.html';
   docsLink.target = '_blank'; docsLink.rel = 'noopener noreferrer';
   Object.assign(docsLink.style, { fontSize: '13px', fontWeight: '600', color: C.textMuted, textDecoration: 'none' });
   const gotIt = document.createElement('button');
@@ -2527,6 +2553,9 @@ function buildSpotlight(tabConfig: TabConfig) {
   let settingsCat: 'general' | 'export' = 'general';
   // Debug Logs live auto-refresh timer (cleared when leaving the tab).
   let debugLiveTimer: any = null;
+  // Metadata Explorer: currently-selected type id (null = show the type list).
+  let metadataType: string | null = null;
+  const metadataRecordsCache: Record<string, any[]> = {};
 
   // Results container — fixed height (overlay) so the modal doesn't resize
   // between tabs; flex-fill in full-page mode.
@@ -2584,7 +2613,7 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   // Brand (left) — clickable, opens the documentation site
   const brand = document.createElement('a');
-  brand.href = 'https://praveen420coder.github.io/sf-log-analyzer/';
+  brand.href = 'https://sfspotlight.vercel.app/index.html';
   brand.target = '_blank';
   brand.rel = 'noopener noreferrer';
   brand.title = 'Open documentation';
@@ -2653,7 +2682,7 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   // Docs link (explicit, next to the keyboard hints)
   const docsLink = document.createElement('a');
-  docsLink.href = 'https://praveen420coder.github.io/sf-log-analyzer/';
+  docsLink.href = 'https://sfspotlight.vercel.app/docs.html';
   docsLink.target = '_blank';
   docsLink.rel = 'noopener noreferrer';
   docsLink.style.display = 'flex';
@@ -3049,24 +3078,6 @@ function buildSpotlight(tabConfig: TabConfig) {
     }
   };
 
-  const fetchSalesforceMetadata = async (): Promise<any[]> => {
-    try {
-      const credentials = await getSfCredentials();
-      if (!credentials?.sessionId || !credentials?.instanceUrl) return [];
-      return await new Promise<any[]>((resolve) => {
-        (globalThis as any).chrome.runtime.sendMessage(
-          { type: 'GET_ALL_METADATA', instanceUrl: credentials.instanceUrl, sessionId: credentials.sessionId },
-          (response: any) => {
-            resolve(response?.success && response?.data ? response.data : []);
-          }
-        );
-      });
-    } catch (error) {
-      console.error('Error fetching Salesforce metadata:', error);
-      return [];
-    }
-  };
-
   const fetchSalesforceSecurity = async (): Promise<any[]> => {
     try {
       const credentials = await getSfCredentials();
@@ -3349,57 +3360,138 @@ function buildSpotlight(tabConfig: TabConfig) {
       resultsContainer.appendChild(resultsList);
 
     } else if (activeTab === 'metadata') {
-      if (!cachedMetadata) cachedMetadata = await fetchSalesforceMetadata();
-      const mdList = cachedMetadata || [];
-
-      let filtered = mdList;
-      if (query.length > 0) {
-        filtered = mdList.filter((m) =>
-          (m.label || '').toLowerCase().includes(query) ||
-          (m.apiName || '').toLowerCase().includes(query)
-        );
-      } else {
-        filtered = mdList.slice(0, 50);
-      }
-
-      if (filtered.length === 0) {
-        showMessage(mdList.length === 0
-          ? 'No Custom Metadata Types or Custom Settings found (or no access).'
-          : 'No Custom Metadata or Settings match your search.');
+      // ── Master view: list of metadata types ──
+      if (!metadataType) {
+        (searchInput as HTMLInputElement).placeholder = 'Search metadata types...';
+        let types = METADATA_CATALOG;
+        if (query.length > 0) types = types.filter((t) => t.label.toLowerCase().includes(query) || t.id.toLowerCase().includes(query));
+        if (types.length === 0) { showMessage('No metadata types match your search.'); return; }
+        const list = document.createElement('div');
+        types.forEach((t, index) => {
+          list.appendChild(makeResultRow({
+            icon: t.icon,
+            title: t.label,
+            subtitle: `${t.tooling ? 'Tooling API' : 'Data API'} · ${t.id}`,
+            meta: 'Open ▸',
+            first: index === 0,
+            onClick: () => { metadataType = t.id; (searchInput as HTMLInputElement).value = ''; performSearch(); (searchInput as HTMLInputElement).focus(); },
+          }));
+        });
+        resultsContainer.appendChild(list);
         return;
       }
 
-      const manageUrl = (m: any): string => {
-        if (m.kind === 'mdt') {
-          return m.durableId
-            ? `${lightningOrigin()}/lightning/setup/CustomMetadata/page?address=%2F${m.durableId}`
-            : `${lightningOrigin()}/lightning/setup/CustomMetadata/home`;
-        }
-        return m.durableId
-          ? `${lightningOrigin()}/lightning/setup/CustomSettings/page?address=%2Fsetup%2Fui%2FlistCustomSettingsData.apexp%3Fid%3D${m.durableId}`
-          : `${lightningOrigin()}/lightning/setup/CustomSettings/home`;
+      // ── Detail view: records of the selected type, in a searchable table ──
+      const cat = METADATA_CATALOG.find((t) => t.id === metadataType);
+      if (!cat) { metadataType = null; performSearch(); return; }
+      (searchInput as HTMLInputElement).placeholder = `Search ${cat.label}...`;
+
+      const fetchMeta = (c: MetaType) => new Promise<{ records: any[]; error?: string }>((resolve) => {
+        getSfCredentials().then((creds: any) => {
+          if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+          (globalThis as any).chrome.runtime.sendMessage(
+            { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: c.soql, tooling: c.tooling },
+            (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
+          );
+        });
+      });
+
+      const getVal = (rec: any, key: string) => key.split('.').reduce((o: any, k) => (o == null ? undefined : o[k]), rec);
+      const fmtVal = (key: string, v: any): string => {
+        if (v == null) return '';
+        if (typeof v === 'boolean') return v ? '✓' : '✗';
+        if ((key.includes('Date') || key.includes('Time')) && typeof v === 'string') { const d = new Date(v); if (!isNaN(d.getTime())) return d.toLocaleString(); }
+        return String(v);
       };
 
-      const resultsList = document.createElement('div');
-      filtered.forEach((m, index) => {
-        const kindLabel = m.kind === 'mdt' ? 'Custom Metadata' : 'Custom Setting';
-        const url = manageUrl(m);
-        const entry = { kind: 'metadata', icon: m.kind === 'mdt' ? '🧩' : '⚙️', title: m.label || m.apiName, subtitle: m.apiName, meta: kindLabel, url };
-        resultsList.appendChild(makeResultRow({
-          icon: m.kind === 'mdt' ? '🧩' : '⚙️',
-          title: m.label || m.apiName,
-          subtitle: `${m.apiName} · Manage records`,
-          meta: kindLabel,
-          first: index === 0,
-          fav: entry,
-          onClick: () => {
-            recordRecent(entry);
-            window.open(url, '_blank');
-            hideSpotlightSearch();
-          },
-        }));
+      const root = document.createElement('div');
+      Object.assign(root.style, { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column' });
+      resultsContainer.appendChild(root);
+
+      const head = document.createElement('div');
+      Object.assign(head.style, { display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 4px 12px', flexShrink: '0', borderBottom: `1px solid ${T.divider}` });
+      const back = document.createElement('button');
+      back.innerHTML = '← Types';
+      Object.assign(back.style, { background: 'transparent', border: `1px solid ${T.chipBorder}`, color: T.textPrimary, borderRadius: '8px', padding: '5px 10px', cursor: 'pointer', fontSize: '13px', fontWeight: '600', fontFamily: 'inherit', flexShrink: '0' });
+      back.addEventListener('click', () => { metadataType = null; (searchInput as HTMLInputElement).value = ''; performSearch(); });
+      head.appendChild(back);
+      const title = document.createElement('div');
+      title.innerHTML = `<span style="font-size:15px">${cat.icon}</span> <span style="font-weight:800;font-size:14px">${cat.label}</span>`;
+      head.appendChild(title);
+      const countEl = document.createElement('span');
+      Object.assign(countEl.style, { marginLeft: 'auto', fontSize: '12px', color: T.textMuted });
+      head.appendChild(countEl);
+      const refresh = document.createElement('button');
+      refresh.textContent = '↻';
+      refresh.title = 'Reload';
+      Object.assign(refresh.style, { background: 'transparent', border: `1px solid ${T.chipBorder}`, color: T.textPrimary, borderRadius: '8px', padding: '5px 10px', cursor: 'pointer', fontSize: '13px', fontFamily: 'inherit', flexShrink: '0' });
+      refresh.addEventListener('click', () => { delete metadataRecordsCache[cat.id]; performSearch(); });
+      head.appendChild(refresh);
+      root.appendChild(head);
+
+      const tableScroll = document.createElement('div');
+      Object.assign(tableScroll.style, { flex: '1', minHeight: '0', overflow: 'auto' });
+      root.appendChild(tableScroll);
+
+      let mdRecords = metadataRecordsCache[cat.id];
+      if (!mdRecords) {
+        const loading = document.createElement('div');
+        Object.assign(loading.style, { padding: '20px', color: T.textMuted, fontSize: '13px' });
+        loading.textContent = 'Loading…';
+        tableScroll.appendChild(loading);
+        const res = await fetchMeta(cat);
+        tableScroll.innerHTML = '';
+        if (res.error) {
+          const err = document.createElement('div');
+          Object.assign(err.style, { padding: '20px', color: '#ef4444', fontSize: '13px', whiteSpace: 'pre-wrap' });
+          err.textContent = `Could not load ${cat.label}:\n${res.error}`;
+          tableScroll.appendChild(err);
+          countEl.textContent = '';
+          return;
+        }
+        mdRecords = res.records;
+        metadataRecordsCache[cat.id] = mdRecords;
+      }
+
+      const filteredRecords = query.length === 0 ? mdRecords : mdRecords.filter((r) => cat.columns.some((c) => fmtVal(c.key, getVal(r, c.key)).toLowerCase().includes(query)));
+      countEl.textContent = `${filteredRecords.length.toLocaleString()}${query ? ` / ${mdRecords.length.toLocaleString()}` : ''} record${filteredRecords.length === 1 ? '' : 's'}`;
+
+      if (mdRecords.length === 0) {
+        const empty = document.createElement('div');
+        Object.assign(empty.style, { padding: '20px', color: T.textMuted, fontSize: '13px' });
+        empty.textContent = `No ${cat.label} found in this org (or no access).`;
+        tableScroll.appendChild(empty);
+        return;
+      }
+
+      const table = document.createElement('table');
+      Object.assign(table.style, { borderCollapse: 'collapse', width: '100%', fontSize: '12.5px' });
+      const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: T.surface, color: T.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', borderBottom: `1px solid ${T.chipBorder}`, zIndex: '1' } as Partial<CSSStyleDeclaration>;
+      const thead = document.createElement('thead'); const htr = document.createElement('tr');
+      cat.columns.forEach((c) => { const th = document.createElement('th'); Object.assign(th.style, thStyle); th.textContent = c.label; htr.appendChild(th); });
+      thead.appendChild(htr); table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      const tdStyle = { padding: '6px 12px', color: T.textPrimary, whiteSpace: 'nowrap', borderBottom: `1px solid ${T.divider}`, maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis' } as Partial<CSSStyleDeclaration>;
+      filteredRecords.forEach((r, ri) => {
+        const tr = document.createElement('tr');
+        if (ri % 2 === 1) tr.style.background = T.surface;
+        tr.addEventListener('mouseover', () => (tr.style.background = T.rowHover));
+        tr.addEventListener('mouseout', () => (tr.style.background = ri % 2 === 1 ? T.surface : ''));
+        cat.columns.forEach((c) => {
+          const td = document.createElement('td'); Object.assign(td.style, tdStyle);
+          const val = fmtVal(c.key, getVal(r, c.key));
+          td.textContent = val; td.title = val;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
       });
-      resultsContainer.appendChild(resultsList);
+      table.appendChild(tbody);
+      tableScroll.appendChild(table);
+      if (filteredRecords.length === 0) {
+        const none = document.createElement('div'); Object.assign(none.style, { padding: '16px', color: T.textMuted, fontSize: '13px' });
+        none.textContent = 'No records match your search.'; tableScroll.appendChild(none);
+      }
+      return;
 
     } else if (activeTab === 'users') {
       if (!cachedUsers) cachedUsers = await fetchSalesforceUsers();
@@ -4171,6 +4263,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     activeTab = id;
     selectedIndex = -1;
     toolView = null;
+    metadataType = null;
     if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; }
     Object.keys(tabButtons).forEach(tid => styleTabButton(tabButtons[tid], tid === id));
 

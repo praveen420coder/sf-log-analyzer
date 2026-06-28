@@ -199,7 +199,7 @@ export default function App() {
                 © 2026 Praveen Kumar
               </p>
               <a
-                href="https://praveen420coder.github.io/sf-log-analyzer/"
+                href="https://sfspotlight.vercel.app/docs.html"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[9px] font-black uppercase tracking-[0.2em] text-gray-400 hover:text-blue-500 transition-colors"

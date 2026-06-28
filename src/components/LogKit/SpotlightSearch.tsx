@@ -251,7 +251,7 @@ const SpotlightSearch: React.FC<SpotlightSearchProps> = ({ isOpen, onClose, inst
               <div className="flex items-center gap-4">
                 <span>{filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''}</span>
                 <a
-                  href="https://praveen420coder.github.io/sf-log-analyzer/"
+                  href="https://sfspotlight.vercel.app/docs.html"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-white/60 hover:text-white transition-colors"

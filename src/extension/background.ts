@@ -223,6 +223,17 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'METADATA_QUERY') {
+        const base = request.tooling ? 'tooling/query' : 'query';
+        fetch(`${request.instanceUrl}/services/data/v59.0/${base}/?q=${encodeURIComponent(request.query)}`, {
+          headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' },
+        })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 200) || 'Unknown error'}`); })))
+          .then((data) => sendResponse({ success: true, data: data.records || [] }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'GET_DEBUG_LOGS') {
         const where = request.userId ? ` WHERE LogUserId = '${request.userId}'` : '';
         const query = `SELECT Id, LogLength, Operation, Status, StartTime, DurationMilliseconds, Request, LogUser.Name FROM ApexLog${where} ORDER BY StartTime DESC LIMIT 100`;
