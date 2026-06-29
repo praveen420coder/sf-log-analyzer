@@ -18,7 +18,7 @@ export default function App() {
   const prevDeletingRef = useRef(false);
 
   const { 
-    logs, isFetching, userInfo, fetchLogs ,instanceUrl, sessionId,
+    logs, isFetching, userInfo, fetchLogs ,instanceUrl, sessionId, currentHostname,
     debugSession, isCreatingDebugSession, createDebugSession,
     stopDebugSession, isStoppingDebugSession,
     deleteAllLogs, isDeletingAllLogs
@@ -109,8 +109,10 @@ export default function App() {
     // Open the new full-page Log Explorer and jump straight into the analyzer.
     const logId = (log as any).id || (log as any).Id;
     const cr = (globalThis as any).chrome?.runtime;
-    let host = '';
-    try { host = instanceUrl ? new URL(instanceUrl).hostname : ''; } catch { host = ''; }
+    // Use the hostname that actually resolved this session (same value content-ui
+    // passes when opening the full-page tab); fall back to the instance URL host.
+    let host = currentHostname || '';
+    if (!host) { try { host = instanceUrl ? new URL(instanceUrl).hostname : ''; } catch { host = ''; } }
     if (cr?.getURL && logId && host) {
       const url = `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(host)}&analyzeLog=${encodeURIComponent(logId)}`;
       if (cr.sendMessage) cr.sendMessage({ type: 'OPEN_TAB', url });

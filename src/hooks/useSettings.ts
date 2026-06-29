@@ -6,6 +6,7 @@ export interface ExtensionSettings {
   width: number; // percentage of viewport
   verticalPosition: number; // 0-100 (0 = top, 50 = middle, 100 = bottom)
   spotlightTheme: 'light' | 'dark'; // Spotlight modal appearance
+  showObjectExplorer?: boolean; // Object Explorer icon in the SF global header
 }
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -14,6 +15,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   width: 50,
   verticalPosition: 50,
   spotlightTheme: 'light',
+  showObjectExplorer: true,
 };
 
 const STORAGE_KEY = 'sf_log_analyzer_settings';

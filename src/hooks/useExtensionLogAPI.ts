@@ -327,12 +327,13 @@ export function useExtensionLogAPI() {
     );
   }, [instanceUrl, sessionId, fetchLogs]);
 
-  return { 
-    logs, 
-    isFetching, 
-    error, 
-    instanceUrl, 
-    sessionId, 
+  return {
+    logs,
+    isFetching,
+    error,
+    instanceUrl,
+    sessionId,
+    currentHostname,
     userInfo, 
     fetchLogs, 
     refreshCredentials, 

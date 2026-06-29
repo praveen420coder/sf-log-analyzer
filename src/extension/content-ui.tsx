@@ -8,6 +8,7 @@ interface ExtensionSettings {
   width: number;
   verticalPosition: number;
   spotlightTheme: 'light' | 'dark';
+  showObjectExplorer: boolean;
 }
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -16,10 +17,15 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   width: 50,
   verticalPosition: 50,
   spotlightTheme: 'light',
+  showObjectExplorer: true,
 };
 
 // Tracks the spotlight theme so buildSpotlight() (module-level) can read it.
 let currentSpotlightTheme: 'light' | 'dark' = 'light';
+// Whether the Object Explorer icon is shown in the Salesforce global header.
+let objectExplorerEnabled = true;
+// When a theme toggle rebuilds the modal, reopen the Settings panel afterwards.
+let reopenSettingsAfterBuild = false;
 
 const STORAGE_KEY = 'sf_log_analyzer_settings';
 
@@ -46,6 +52,15 @@ function loadSettings(callback: (settings: ExtensionSettings) => void): void {
     }
   }
 }
+
+function persistSettings(patch: Partial<ExtensionSettings>): void {
+  loadSettings((s) => {
+    const merged = { ...s, ...patch };
+    if ((globalThis as any).chrome?.storage?.local) (globalThis as any).chrome.storage.local.set({ [STORAGE_KEY]: merged });
+    else try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
+  });
+}
+function saveSpotlightTheme(theme: 'light' | 'dark'): void { persistSettings({ spotlightTheme: theme }); }
 
 function isSalesforcePage(): boolean {
   const visualForceDomains = ["visualforce.com", "vf.force.com"];
@@ -191,7 +206,16 @@ function saveTabConfig(cfg: TabConfig): void {
 loadTabConfig();
 
 // Load the saved spotlight theme so the modal renders with the right appearance.
-loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; });
+loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; });
+// Keep the global-header toggle in sync when changed from another tab/the settings page.
+try {
+  (globalThis as any).chrome?.storage?.onChanged?.addListener((changes: any, area: string) => {
+    if (area === 'local' && changes[STORAGE_KEY]?.newValue) {
+      const v = changes[STORAGE_KEY].newValue;
+      objectExplorerEnabled = v.showObjectExplorer !== false;
+    }
+  });
+} catch { /* ignore */ }
 
 // ─── Recent items (clicked results) ──────────────────────────────────────────
 
@@ -4542,8 +4566,48 @@ function buildSpotlight(tabConfig: TabConfig) {
       return;
     }
 
-    // ── General: customize tabs ──
+    // ── General: appearance (light / dark) ──
     const wrap = content;
+    const apHeading = document.createElement('div');
+    apHeading.textContent = 'Appearance';
+    Object.assign(apHeading.style, { fontSize: '16px', fontWeight: '700', color: T.textPrimary, marginBottom: '4px' });
+    wrap.appendChild(apHeading);
+    const apSub = document.createElement('div');
+    apSub.textContent = 'Switch Spotlight between light and dark mode';
+    Object.assign(apSub.style, { fontSize: '13px', color: T.textMuted, marginBottom: '12px' });
+    wrap.appendChild(apSub);
+
+    const themeSeg = document.createElement('div');
+    Object.assign(themeSeg.style, { display: 'inline-flex', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', overflow: 'hidden', marginBottom: '26px' });
+    ([['light', '☀️ Light'], ['dark', '🌙 Dark']] as const).forEach(([val, label]) => {
+      const on = currentSpotlightTheme === val;
+      const b = document.createElement('button');
+      b.textContent = label;
+      Object.assign(b.style, { background: on ? T.accent : 'transparent', color: on ? '#fff' : T.textMuted, border: 'none', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: on ? '700' : '600', fontFamily: 'inherit' });
+      b.addEventListener('click', () => {
+        if (currentSpotlightTheme === val) return;
+        currentSpotlightTheme = val;
+        saveSpotlightTheme(val);
+        if (SPOTLIGHT_PAGE) document.body.style.background = val === 'dark' ? '#0f172a' : '#ffffff';
+        // Rebuild so every token re-colors, then land back on this settings page.
+        reopenSettingsAfterBuild = true;
+        showSpotlightSearch();
+      });
+      themeSeg.appendChild(b);
+    });
+    wrap.appendChild(themeSeg);
+
+    // Object Explorer header-icon toggle
+    const oeRow = document.createElement('label');
+    Object.assign(oeRow.style, { display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '26px', padding: '10px 12px', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', maxWidth: '440px' });
+    const oeChk = document.createElement('input'); oeChk.type = 'checkbox'; oeChk.checked = objectExplorerEnabled; oeChk.style.cursor = 'pointer';
+    oeChk.addEventListener('change', () => { objectExplorerEnabled = oeChk.checked; persistSettings({ showObjectExplorer: oeChk.checked }); });
+    const oeText = document.createElement('div');
+    oeText.innerHTML = `<div style="font-size:13px;font-weight:700;color:${T.textPrimary}">Object Explorer icon</div><div style="font-size:12px;color:${T.textMuted}">Show the Object Explorer icon in the Salesforce global header on record pages</div>`;
+    oeRow.appendChild(oeChk); oeRow.appendChild(oeText);
+    wrap.appendChild(oeRow);
+
+    // ── General: customize tabs ──
     const heading = document.createElement('div');
     heading.textContent = 'Customize tabs';
     heading.style.fontSize = '16px';
@@ -4758,7 +4822,8 @@ function buildSpotlight(tabConfig: TabConfig) {
   spotlightContainer.style.display = 'flex';
   spotlightContainer.style.pointerEvents = 'auto';
   modalContent.style.pointerEvents = 'auto';
-  activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab);
+  if (reopenSettingsAfterBuild) { reopenSettingsAfterBuild = false; activateTab('__settings'); }
+  else activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab);
   searchInput.focus();
 }
 
@@ -4954,9 +5019,132 @@ function bootFullPageSpotlight() {
   });
 }
 
+// ─── Object Explorer global action ───────────────────────────────────────────
+// Injects an icon into Salesforce's global-actions header. On a record/object
+// page it opens a panel of Object Manager sections for the current object.
+const OBJ_EXPLORER_SECTIONS: { group: string; items: [string, string][] }[] = [
+  { group: 'Schema', items: [['Fields & Relationships', 'FieldsAndRelationships'], ['Compact Layouts', 'CompactLayouts'], ['Field Sets', 'FieldSets'], ['Record Types', 'RecordTypes'], ['Object Limits', 'Limits']] },
+  { group: 'UI', items: [['Page Layouts', 'PageLayouts'], ['Lightning Record Pages', 'LightningPages'], ['Buttons, Links & Actions', 'ButtonsLinksActions'], ['Search Layouts', 'SearchLayouts'], ['List View Button Layout', 'ListViewButtonLayout']] },
+  { group: 'Logic', items: [['Validation Rules', 'ValidationRules'], ['Triggers', 'Triggers'], ['Flow Triggers', 'FlowTriggers'], ['Restriction Rules', 'RestrictionRules'], ['Scoping Rules', 'ScopingRules']] },
+  { group: 'Other', items: [['Related Lookup Filters', 'RelatedLookupFilters'], ['Object Details', 'Details']] },
+];
+
+function toggleObjectExplorerPanel(obj: string): void {
+  const PANEL_ID = 'sf-spotlight-obj-explorer-panel';
+  const existing = document.getElementById(PANEL_ID);
+  if (existing) { existing.remove(); return; }
+
+  // Match the Spotlight theme (light / dark).
+  const isDark = currentSpotlightTheme === 'dark';
+  const P = {
+    bg: isDark ? '#0f172a' : '#ffffff',
+    text: isDark ? '#e2e8f0' : '#1f2937',
+    muted: isDark ? '#94a3b8' : '#64748b',
+    faint: isDark ? 'rgba(148,163,184,0.6)' : '#9aa3b2',
+    border: isDark ? 'rgba(148,163,184,0.18)' : '#eef0f3',
+    hover: isDark ? 'rgba(59,130,246,0.18)' : '#eef2ff',
+    accent: '#3b82f6',
+  };
+  const icoUrl = (() => { try { return (globalThis as any).chrome?.runtime?.getURL?.('icons/Spotlite-Icon.svg') || ''; } catch { return ''; } })();
+
+  const origin = lightningOrigin();
+  const panel = document.createElement('div');
+  panel.id = PANEL_ID;
+  Object.assign(panel.style, {
+    position: 'fixed', top: '0', right: '0', width: '340px', maxWidth: '92vw', height: '100vh',
+    background: P.bg, boxShadow: '-8px 0 40px rgba(0,0,0,0.28)', zIndex: '2147483646',
+    display: 'flex', flexDirection: 'column', fontFamily: 'Inter, system-ui, sans-serif', color: P.text,
+    borderLeft: `1px solid ${P.border}`,
+  });
+
+  // header — brand gradient to match the rest of the UI
+  const header = document.createElement('div');
+  Object.assign(header.style, { background: 'linear-gradient(135deg, #4f8cff, #2563eb)', color: '#fff', padding: '16px 18px', display: 'flex', alignItems: 'center', gap: '10px', flexShrink: '0' });
+  const hIco = icoUrl
+    ? `<img src="${icoUrl}" alt="" style="width:22px;height:22px;border-radius:5px;flex-shrink:0;background:rgba(255,255,255,0.18)" />`
+    : `<svg viewBox="0 0 520 520" width="22" height="22" style="fill:#fff;flex-shrink:0"><g><path d="M235 248a63 63 0 00-63 63c0 35 28 63 63 63s63-28 63-63-28-63-63-63z"></path></g></svg>`;
+  header.innerHTML = hIco;
+  const titleWrap = document.createElement('div'); titleWrap.style.flex = '1'; titleWrap.style.minWidth = '0';
+  titleWrap.innerHTML = `<div style="font-weight:800;font-size:15px;line-height:1.2">Object Explorer</div><div style="font-size:12px;opacity:0.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${obj}</div>`;
+  header.appendChild(titleWrap);
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '✕';
+  Object.assign(closeBtn.style, { background: 'transparent', border: 'none', color: '#fff', fontSize: '18px', cursor: 'pointer', padding: '2px 6px', flexShrink: '0' });
+  closeBtn.addEventListener('click', () => panel.remove());
+  header.appendChild(closeBtn);
+  panel.appendChild(header);
+
+  // body
+  const body = document.createElement('div');
+  Object.assign(body.style, { flex: '1', overflow: 'auto', padding: '8px 0' });
+  panel.appendChild(body);
+  OBJ_EXPLORER_SECTIONS.forEach((sec) => {
+    const gh = document.createElement('div');
+    gh.textContent = sec.group.toUpperCase();
+    Object.assign(gh.style, { fontSize: '10px', fontWeight: '800', letterSpacing: '0.08em', color: P.faint, padding: '14px 18px 4px' });
+    body.appendChild(gh);
+    sec.items.forEach(([label, node]) => {
+      const a = document.createElement('a');
+      a.href = `${origin}/lightning/setup/ObjectManager/${obj}/${node}/view`;
+      a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.textContent = label;
+      Object.assign(a.style, { display: 'block', padding: '9px 18px 9px 14px', fontSize: '13.5px', color: P.text, textDecoration: 'none', cursor: 'pointer', borderLeft: '4px solid transparent', transition: 'background 0.12s, border-color 0.12s' });
+      // Highlighted section on hover (left accent bar + tint), matching our UI.
+      a.addEventListener('mouseover', () => { a.style.background = P.hover; a.style.color = P.accent; a.style.borderLeftColor = P.accent; a.style.fontWeight = '700'; });
+      a.addEventListener('mouseout', () => { a.style.background = 'transparent'; a.style.color = P.text; a.style.borderLeftColor = 'transparent'; a.style.fontWeight = '400'; });
+      body.appendChild(a);
+    });
+  });
+
+  // footer
+  const footer = document.createElement('a');
+  footer.href = `${origin}/lightning/setup/ObjectManager/${obj}/Details/view`;
+  footer.target = '_blank'; footer.rel = 'noopener noreferrer';
+  footer.textContent = 'Open in Salesforce Setup ↗';
+  Object.assign(footer.style, { flexShrink: '0', textAlign: 'center', padding: '12px', fontSize: '12px', color: P.accent, textDecoration: 'none', borderTop: `1px solid ${P.border}` });
+  panel.appendChild(footer);
+
+  document.body.appendChild(panel);
+  const onOut = (e: MouseEvent) => {
+    const t = e.target as Node;
+    if (!panel.contains(t) && !document.getElementById('sf-spotlight-object-explorer')?.contains(t)) { panel.remove(); document.removeEventListener('mousedown', onOut, true); }
+  };
+  setTimeout(() => document.addEventListener('mousedown', onOut, true), 0);
+}
+
+function injectObjectExplorer(): void {
+  if (SPOTLIGHT_PAGE) return;
+  const ICON_ID = 'sf-spotlight-object-explorer';
+  const ensure = () => {
+    const existingAny = document.getElementById(ICON_ID) as HTMLLIElement | null;
+    if (!objectExplorerEnabled) { existingAny?.remove(); document.getElementById('sf-spotlight-obj-explorer-panel')?.remove(); return; }
+    const ul = document.querySelector('ul.slds-global-actions');
+    if (!ul) return;
+    const obj = detectPageObject();
+    const existing = existingAny;
+    if (!obj) { existing?.remove(); return; } // only on record/object pages
+    if (existing) { existing.dataset.obj = obj; return; }
+    const li = document.createElement('li');
+    li.id = ICON_ID;
+    li.className = 'slds-global-actions__item slds-grid';
+    li.title = 'Object Explorer (SF Spotlight)';
+    li.dataset.obj = obj;
+    Object.assign(li.style, { cursor: 'pointer', display: 'flex', alignItems: 'center' });
+    const icoUrl = (() => { try { return (globalThis as any).chrome?.runtime?.getURL?.('icons/Spotlite-Icon.svg') || ''; } catch { return ''; } })();
+    li.innerHTML = icoUrl
+      ? `<img src="${icoUrl}" alt="Object Explorer" style="width:22px;height:22px;border-radius:5px;display:block" />`
+      : `<svg focusable="false" aria-hidden="true" viewBox="0 0 520 520" class="slds-icon slds-icon_small" style="fill:#5c5c5c"><g><path d="M235 248a63 63 0 00-63 63c0 35 28 63 63 63s63-28 63-63-28-63-63-63z"></path></g></svg>`;
+    li.addEventListener('click', (e) => { e.stopPropagation(); toggleObjectExplorerPanel(li.dataset.obj || obj); });
+    ul.insertBefore(li, ul.firstChild);
+  };
+  ensure();
+  // Header renders late and the SPA swaps pages without reload — re-check periodically.
+  setInterval(ensure, 1500);
+}
+
 function init() {
   if (SPOTLIGHT_PAGE) bootFullPageSpotlight();
-  else injectSidebar();
+  else { injectSidebar(); injectObjectExplorer(); }
 }
 
 // Wait for DOM to be ready
