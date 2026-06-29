@@ -223,6 +223,19 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'APEX_RUN_TESTS') {
+        // POST tooling/runTestsAsynchronous → returns the AsyncApexJob id (a JSON string).
+        fetch(`${request.instanceUrl}/services/data/v59.0/tooling/runTestsAsynchronous/`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(request.payload),
+        })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 250) || 'Unknown error'}`); })))
+          .then((data) => sendResponse({ success: true, jobId: typeof data === 'string' ? data : (data?.id || String(data)) }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'METADATA_QUERY') {
         const base = request.tooling ? 'tooling/query' : 'query';
         fetch(`${request.instanceUrl}/services/data/v59.0/${base}/?q=${encodeURIComponent(request.query)}`, {

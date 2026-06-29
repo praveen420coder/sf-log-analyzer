@@ -14,6 +14,8 @@ import { toolsState, loadToolsState, saveToolsState, applyToolToggle, applyShowF
 import type { ToolsState } from './state/toolsState';
 import { showWhatsNew, WHATS_NEW_VERSION_KEY } from './features/whatsNew';
 import { renderPermissionCompareInto } from './features/permissionCompare';
+import { renderApexTestsInto } from './features/apexTestRunner';
+import { renderAccessExplorerInto } from './features/accessExplorer';
 
 // Settings shape, defaults and persistence live in ./state/settings.
 
@@ -110,6 +112,8 @@ const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
   { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
   { id: 'flows', label: 'Flows', placeholder: 'Search Flows...', icon: '⚡' },
   { id: 'debug', label: 'Log Explorer', placeholder: 'Search your debug logs...', icon: '🐞' },
+  { id: 'apextests', label: 'Apex Tests', placeholder: 'Search tests...', icon: '🧪' },
+  { id: 'access', label: 'Access Explorer', placeholder: 'Access map...', icon: '🗺️' },
   { id: 'apps', label: 'Apps & Tabs', placeholder: 'Search apps & tabs...', icon: '🚀' }
 ];
 
@@ -1969,7 +1973,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     textSecondary: isDark ? 'rgba(226, 232, 240, 0.85)' : 'rgba(31, 41, 55, 0.8)',
     textMuted: isDark ? 'rgba(203, 213, 225, 0.65)' : 'rgba(31, 41, 55, 0.6)',
     textFaint: isDark ? 'rgba(148, 163, 184, 0.55)' : 'rgba(31, 41, 55, 0.45)',
-    tabInactive: isDark ? 'rgba(148, 163, 184, 0.7)' : 'rgba(31, 41, 55, 0.5)',
+    tabInactive: isDark ? '#cbd5e1' : '#475569',
     iconStroke: isDark ? '#cbd5e1' : '#1f2937',
     scrollThumb: isDark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(31, 41, 55, 0.25)',
     scrollThumbHover: isDark ? 'rgba(148, 163, 184, 0.55)' : 'rgba(31, 41, 55, 0.45)',
@@ -2130,6 +2134,9 @@ function buildSpotlight(tabConfig: TabConfig) {
   // Metadata Explorer: currently-selected type id (null = show the type list).
   let metadataType: string | null = null;
   const metadataRecordsCache: Record<string, any[]> = {};
+  // Metadata Explorer table sort (persists across search-keystroke re-renders).
+  let metadataSortKey: string | null = null;
+  let metadataSortDir: 'asc' | 'desc' = 'asc';
 
   // Results container — fixed height (overlay) so the modal doesn't resize
   // between tabs; flex-fill in full-page mode.
@@ -2999,7 +3006,7 @@ function buildSpotlight(tabConfig: TabConfig) {
             subtitle: `${t.tooling ? 'Tooling API' : 'Data API'} · ${t.id}`,
             meta: 'Open ▸',
             first: index === 0,
-            onClick: () => { metadataType = t.id; (searchInput as HTMLInputElement).value = ''; performSearch(); (searchInput as HTMLInputElement).focus(); },
+            onClick: () => { metadataType = t.id; metadataSortKey = null; (searchInput as HTMLInputElement).value = ''; performSearch(); (searchInput as HTMLInputElement).focus(); },
           }));
         });
         resultsContainer.appendChild(list);
@@ -3012,15 +3019,22 @@ function buildSpotlight(tabConfig: TabConfig) {
       (searchInput as HTMLInputElement).placeholder = `Search ${cat.label}...`;
 
       const idField = cat.idField || 'Id';
+      // Columns shown = catalog columns + an auto Namespace column where supported.
+      const displayColumns: { key: string; label: string }[] = [...cat.columns];
+      if (cat.namespace && !displayColumns.some((c) => c.key === 'NamespacePrefix')) {
+        displayColumns.push({ key: 'NamespacePrefix', label: 'Namespace' });
+      }
+      const ensureField = (soql: string, field: string): string => {
+        const selectClause = soql.split(/\sFROM\s/i)[0] || '';
+        if (new RegExp(`(^|[\\s,])${field}([\\s,]|$)`, 'i').test(selectClause)) return soql;
+        return soql.replace(/^SELECT\s/i, `SELECT ${field}, `);
+      };
       const fetchMeta = (c: MetaType) => new Promise<{ records: any[]; error?: string }>((resolve) => {
         getSfCredentials().then((creds: any) => {
           if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
-          // Ensure the id field is selected so we can link each row to its record.
-          let soql = c.soql;
-          const selectClause = soql.split(/\sFROM\s/i)[0] || '';
-          if (!new RegExp(`(^|[\\s,])${idField}([\\s,]|$)`, 'i').test(selectClause)) {
-            soql = soql.replace(/^SELECT\s/i, `SELECT ${idField}, `);
-          }
+          // Ensure the id field (for the row link) and NamespacePrefix are selected.
+          let soql = ensureField(c.soql, idField);
+          if (c.namespace) soql = ensureField(soql, 'NamespacePrefix');
           (globalThis as any).chrome.runtime.sendMessage(
             { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: c.tooling },
             (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
@@ -3086,8 +3100,23 @@ function buildSpotlight(tabConfig: TabConfig) {
         metadataRecordsCache[cat.id] = mdRecords;
       }
 
-      const filteredRecords = query.length === 0 ? mdRecords : mdRecords.filter((r) => cat.columns.some((c) => fmtVal(c.key, getVal(r, c.key)).toLowerCase().includes(query)));
+      const filteredRecords = query.length === 0 ? mdRecords : mdRecords.filter((r) => displayColumns.some((c) => fmtVal(c.key, getVal(r, c.key)).toLowerCase().includes(query)));
       countEl.textContent = `${filteredRecords.length.toLocaleString()}${query ? ` / ${mdRecords.length.toLocaleString()}` : ''} record${filteredRecords.length === 1 ? '' : 's'}`;
+
+      // Sort (persisted across re-renders via metadataSortKey/Dir).
+      const sortedRecords = (() => {
+        if (!metadataSortKey) return filteredRecords;
+        const key = metadataSortKey;
+        const isDate = key.includes('Date') || key.includes('Time');
+        const cmp = (a: any, b: any) => {
+          const va = getVal(a, key), vb = getVal(b, key);
+          if (isDate) return (Date.parse(va) || 0) - (Date.parse(vb) || 0);
+          const na = Number(va), nb = Number(vb);
+          if (va !== '' && vb !== '' && va != null && vb != null && !isNaN(na) && !isNaN(nb)) return na - nb;
+          return String(va ?? '').toLowerCase().localeCompare(String(vb ?? '').toLowerCase());
+        };
+        return [...filteredRecords].sort((a, b) => { const c = cmp(a, b); return metadataSortDir === 'asc' ? c : -c; });
+      })();
 
       if (mdRecords.length === 0) {
         const empty = document.createElement('div');
@@ -3101,12 +3130,22 @@ function buildSpotlight(tabConfig: TabConfig) {
       Object.assign(table.style, { borderCollapse: 'collapse', width: '100%', fontSize: '12.5px' });
       const thStyle = { position: 'sticky', top: '0', textAlign: 'left', padding: '8px 12px', background: currentSpotlightTheme === 'dark' ? '#1e293b' : '#ffffff', color: T.textPrimary, fontWeight: '700', whiteSpace: 'nowrap', borderBottom: `1px solid ${T.chipBorder}`, zIndex: '1' } as Partial<CSSStyleDeclaration>;
       const thead = document.createElement('thead'); const htr = document.createElement('tr');
-      const idTh = document.createElement('th'); Object.assign(idTh.style, thStyle); idTh.textContent = 'Id'; htr.appendChild(idTh);
-      cat.columns.forEach((c) => { const th = document.createElement('th'); Object.assign(th.style, thStyle); th.textContent = c.label; htr.appendChild(th); });
+      const headerCols: { key: string; label: string }[] = [{ key: idField, label: 'Id' }, ...displayColumns];
+      headerCols.forEach((c) => {
+        const th = document.createElement('th'); Object.assign(th.style, { ...thStyle, cursor: 'pointer', userSelect: 'none' });
+        const active = metadataSortKey === c.key;
+        th.innerHTML = `${c.label} <span style="color:${active ? T.accent : T.textFaint};font-size:11px">${active ? (metadataSortDir === 'asc' ? '▲' : '▼') : '↕'}</span>`;
+        th.addEventListener('click', () => {
+          if (metadataSortKey === c.key) metadataSortDir = metadataSortDir === 'asc' ? 'desc' : 'asc';
+          else { metadataSortKey = c.key; metadataSortDir = 'asc'; }
+          performSearch();
+        });
+        htr.appendChild(th);
+      });
       thead.appendChild(htr); table.appendChild(thead);
       const tbody = document.createElement('tbody');
       const tdStyle = { padding: '6px 12px', color: T.textPrimary, whiteSpace: 'nowrap', borderBottom: `1px solid ${T.divider}`, maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis' } as Partial<CSSStyleDeclaration>;
-      filteredRecords.forEach((r, ri) => {
+      sortedRecords.forEach((r, ri) => {
         const tr = document.createElement('tr');
         if (ri % 2 === 1) tr.style.background = T.surface;
         tr.addEventListener('mouseover', () => (tr.style.background = T.rowHover));
@@ -3126,10 +3165,10 @@ function buildSpotlight(tabConfig: TabConfig) {
           idTd.appendChild(a);
         } else { idTd.textContent = '—'; idTd.style.color = T.textFaint; }
         tr.appendChild(idTd);
-        cat.columns.forEach((c) => {
+        displayColumns.forEach((c) => {
           const td = document.createElement('td'); Object.assign(td.style, tdStyle);
           const val = fmtVal(c.key, getVal(r, c.key));
-          td.textContent = val; td.title = val;
+          td.textContent = val || (c.key === 'NamespacePrefix' ? '' : val); td.title = val;
           tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -3176,6 +3215,9 @@ function buildSpotlight(tabConfig: TabConfig) {
       filtered.forEach((user, index) => {
         const resultItem = document.createElement('div');
         resultItem.style.width = '100%';
+        resultItem.style.boxSizing = 'border-box';
+        resultItem.style.maxWidth = '100%';
+        resultItem.style.overflow = 'hidden';
         resultItem.style.padding = '16px 32px';
         resultItem.style.display = 'flex';
         resultItem.style.alignItems = 'center';
@@ -3216,6 +3258,9 @@ function buildSpotlight(tabConfig: TabConfig) {
         const email = document.createElement('div');
         email.style.fontSize = '12px';
         email.style.color = T.textSecondary;
+        email.style.overflow = 'hidden';
+        email.style.textOverflow = 'ellipsis';
+        email.style.whiteSpace = 'nowrap';
         email.textContent = user.email || user.username;
 
         contentContainer.appendChild(name);
@@ -3433,6 +3478,40 @@ function buildSpotlight(tabConfig: TabConfig) {
         }));
       });
       resultsContainer.appendChild(resultsList);
+
+    } else if (activeTab === 'apextests') {
+      inputContainer.style.display = 'none';
+      resultsContainer.innerHTML = '';
+      const sendMsg = (extra: any) => new Promise<any>((resolve) => {
+        getSfCredentials().then((creds: any) => {
+          if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' }); return; }
+          (globalThis as any).chrome.runtime.sendMessage({ instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...extra }, (resp: any) => resolve(resp || { success: false, error: 'No response' }));
+        });
+      });
+      renderApexTestsInto(resultsContainer, {
+        isDark: currentSpotlightTheme === 'dark',
+        orgLabel: sfHostname(),
+        flashToast,
+        runQuery: (soql: string, tooling = false) => sendMsg({ type: 'METADATA_QUERY', query: soql, tooling }).then((r) => (r.success ? { records: r.data || [] } : { records: [], error: r.error || 'Query failed' })),
+        runTests: (payload: any) => sendMsg({ type: 'APEX_RUN_TESTS', payload }).then((r) => (r.success ? { jobId: r.jobId } : { error: r.error || 'Failed to run tests' })),
+      });
+      return;
+
+    } else if (activeTab === 'access') {
+      inputContainer.style.display = 'none';
+      resultsContainer.innerHTML = '';
+      renderAccessExplorerInto(resultsContainer, {
+        isDark: currentSpotlightTheme === 'dark',
+        hideBack: true,
+        flashToast,
+        runQuery: (soql: string) => new Promise((resolve) => {
+          getSfCredentials().then((creds: any) => {
+            if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+            (globalThis as any).chrome.runtime.sendMessage({ type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: false }, (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }));
+          });
+        }),
+      });
+      return;
 
     } else if (activeTab === 'debug') {
       inputContainer.style.display = 'none';
@@ -3712,7 +3791,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3722,19 +3801,21 @@ function buildSpotlight(tabConfig: TabConfig) {
         if (toolView === 'release') { renderReleaseInfoInto(resultsContainer, isDark, onBack); return; }
         if (toolView === 'apiusage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '📊  API Usage', fields: API_FIELDS }); return; }
         if (toolView === 'storage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '💾  Storage Insights', fields: STORAGE_FIELDS }); return; }
-        if (toolView === 'permcompare') {
-          renderPermissionCompareInto(resultsContainer, {
-            isDark, onBack, flashToast,
-            runQuery: (soql: string) => new Promise((resolve) => {
-              getSfCredentials().then((creds: any) => {
-                if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
-                (globalThis as any).chrome.runtime.sendMessage(
-                  { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: false },
-                  (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
-                );
-              });
-            }),
+        const dataQuery = (soql: string) => new Promise<{ records: any[]; error?: string }>((resolve) => {
+          getSfCredentials().then((creds: any) => {
+            if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+            (globalThis as any).chrome.runtime.sendMessage(
+              { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: false },
+              (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
+            );
           });
+        });
+        if (toolView === 'permcompare') {
+          renderPermissionCompareInto(resultsContainer, { isDark, onBack, flashToast, runQuery: dataQuery });
+          return;
+        }
+        if (toolView === 'accessmap') {
+          renderAccessExplorerInto(resultsContainer, { isDark, onBack, flashToast, runQuery: dataQuery });
           return;
         }
         toolView = null;
@@ -3787,6 +3868,10 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => { searchInput.value = ''; toolView = 'permcompare'; performSearch(); },
         },
         {
+          id: 'accessmap', icon: '🗺️', label: 'Access Explorer', desc: 'Object, field & user access map',
+          run: () => { searchInput.value = ''; toolView = 'accessmap'; performSearch(); },
+        },
+        {
           id: 'release', icon: '🚀', label: 'Salesforce Release', desc: 'Current release & updates',
           run: () => { searchInput.value = ''; toolView = 'release'; performSearch(); },
         },
@@ -3799,11 +3884,12 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => { searchInput.value = ''; toolView = 'storage'; performSearch(); },
         },
         {
-          id: 'clearsession', icon: '🧹', label: 'Clear Session', desc: 'Reset the cached SF session',
+          id: 'clearsession', icon: '🧹', label: 'Clear Cache', desc: 'Clear cached session & reload',
           run: () => {
             const cr = (globalThis as any).chrome?.runtime;
+            flashToast('Clearing cache & reloading…');
             cr?.sendMessage({ type: 'CLEAR_SESSION_CACHE', hostname: cleanSfDomain(sfHostname()) }, () => {
-              flashToast('Cached session cleared — credentials will refresh');
+              setTimeout(() => window.location.reload(), 300);
             });
             hideSpotlightSearch();
           },
@@ -3821,8 +3907,6 @@ function buildSpotlight(tabConfig: TabConfig) {
           },
         },
         { id: 'fieldapi', icon: '🏷️', label: 'Show Field API Names', desc: 'On record pages', toggleKey: 'showFieldApi' },
-        { id: 'devbar', icon: '🛑', label: 'Hide App Dev Bar', desc: 'Hide the dev toolbar', toggleKey: 'hideDevBar' },
-        { id: 'loginad', icon: '🙈', label: 'Hide Login Page Ad', desc: 'Cleaner login page', toggleKey: 'hideLoginAd' },
         {
           id: 'whatsnew', icon: '✨', label: "What's New", desc: 'See the latest features',
           run: () => {
