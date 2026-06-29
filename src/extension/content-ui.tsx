@@ -1,24 +1,20 @@
 // Content script - injects iframe to load the React app
 import { setupLinks } from './links';
 import { renderLogAnalyzerInto } from './log-analyzer/logAnalyzerView';
+import { METADATA_CATALOG } from './spotlight/metadataCatalog';
+import type { MetaType } from './spotlight/metadataCatalog';
+import { initObjectExplorer } from './features/objectExplorer';
+import { COMMON_PREFIXES, isValidSalesforceId } from './lib/salesforceId';
+import { loadRecentsAndFavorites, getRecents, getFavorites, recordRecent, clearRecents, isFavorite, toggleFavorite } from './state/recents';
+import type { RecentItem } from './state/recents';
+import { STORAGE_KEY, loadSettings, persistSettings, saveSpotlightTheme } from './state/settings';
+import type { ExtensionSettings } from './state/settings';
+import { SPOTLIGHT_PAGE, sfHostname, sfProtocol, cleanSfDomain, lightningOrigin, setupOrigin, getSfCredentials } from './lib/sfUrls';
+import { toolsState, loadToolsState, saveToolsState, applyToolToggle, applyShowFieldApi, applyAllToolToggles } from './state/toolsState';
+import type { ToolsState } from './state/toolsState';
+import { showWhatsNew, WHATS_NEW_VERSION_KEY } from './features/whatsNew';
 
-interface ExtensionSettings {
-  position: 'right' | 'left';
-  opacity: number;
-  width: number;
-  verticalPosition: number;
-  spotlightTheme: 'light' | 'dark';
-  showObjectExplorer: boolean;
-}
-
-const DEFAULT_SETTINGS: ExtensionSettings = {
-  position: 'right',
-  opacity: 100,
-  width: 50,
-  verticalPosition: 50,
-  spotlightTheme: 'light',
-  showObjectExplorer: true,
-};
+// Settings shape, defaults and persistence live in ./state/settings.
 
 // Tracks the spotlight theme so buildSpotlight() (module-level) can read it.
 let currentSpotlightTheme: 'light' | 'dark' = 'light';
@@ -26,41 +22,6 @@ let currentSpotlightTheme: 'light' | 'dark' = 'light';
 let objectExplorerEnabled = true;
 // When a theme toggle rebuilds the modal, reopen the Settings panel afterwards.
 let reopenSettingsAfterBuild = false;
-
-const STORAGE_KEY = 'sf_log_analyzer_settings';
-
-function loadSettings(callback: (settings: ExtensionSettings) => void): void {
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.get([STORAGE_KEY], (result: any) => {
-      if (result[STORAGE_KEY]) {
-        callback({ ...DEFAULT_SETTINGS, ...result[STORAGE_KEY] });
-      } else {
-        callback(DEFAULT_SETTINGS);
-      }
-    });
-  } else {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        callback({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
-      } else {
-        callback(DEFAULT_SETTINGS);
-      }
-    } catch (error) {
-      console.error('Failed to load settings:', error);
-      callback(DEFAULT_SETTINGS);
-    }
-  }
-}
-
-function persistSettings(patch: Partial<ExtensionSettings>): void {
-  loadSettings((s) => {
-    const merged = { ...s, ...patch };
-    if ((globalThis as any).chrome?.storage?.local) (globalThis as any).chrome.storage.local.set({ [STORAGE_KEY]: merged });
-    else try { localStorage.setItem(STORAGE_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
-  });
-}
-function saveSpotlightTheme(theme: 'light' | 'dark'): void { persistSettings({ spotlightTheme: theme }); }
 
 function isSalesforcePage(): boolean {
   const visualForceDomains = ["visualforce.com", "vf.force.com"];
@@ -217,230 +178,11 @@ try {
   });
 } catch { /* ignore */ }
 
-// ─── Recent items (clicked results) ──────────────────────────────────────────
-
-interface RecentItem {
-  kind: string;        // setup | object | user | security | flow
-  icon: string;
-  title: string;
-  subtitle?: string;
-  meta?: string;
-  url: string;         // where to (re)open it
-  ts: number;          // last-opened timestamp
-}
-
-const RECENTS_KEY = 'sf_spotlight_recents';
-const MAX_RECENTS = 15;
-
-// Loaded once at startup; kept in sync so the spotlight can read synchronously.
-let recentItems: RecentItem[] = [];
-
-function loadRecents(): void {
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.get([RECENTS_KEY], (res: any) => {
-      recentItems = Array.isArray(res?.[RECENTS_KEY]) ? res[RECENTS_KEY] : [];
-    });
-  } else {
-    try { recentItems = JSON.parse(localStorage.getItem(RECENTS_KEY) || '[]'); }
-    catch { recentItems = []; }
-  }
-}
-
-function saveRecents(): void {
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.set({ [RECENTS_KEY]: recentItems });
-  } else {
-    try { localStorage.setItem(RECENTS_KEY, JSON.stringify(recentItems)); } catch { /* ignore */ }
-  }
-}
-
-// Push an item to the top of the recents list, de-duping by url + kind.
-function recordRecent(entry: Omit<RecentItem, 'ts'>): void {
-  if (!entry.url) return;
-  recentItems = recentItems.filter(r => !(r.url === entry.url && r.kind === entry.kind));
-  recentItems.unshift({ ...entry, ts: Date.now() });
-  if (recentItems.length > MAX_RECENTS) recentItems.length = MAX_RECENTS;
-  saveRecents();
-}
-
-function clearRecents(): void {
-  recentItems = [];
-  saveRecents();
-}
-
-loadRecents();
-
-// ─── Pinned / favorite destinations ──────────────────────────────────────────
-
-const FAVORITES_KEY = 'sf_spotlight_favorites';
-const MAX_FAVORITES = 50;
-
-let favoriteItems: RecentItem[] = [];
-
-function loadFavorites(): void {
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.get([FAVORITES_KEY], (res: any) => {
-      favoriteItems = Array.isArray(res?.[FAVORITES_KEY]) ? res[FAVORITES_KEY] : [];
-    });
-  } else {
-    try { favoriteItems = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]'); }
-    catch { favoriteItems = []; }
-  }
-}
-
-function saveFavorites(): void {
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.set({ [FAVORITES_KEY]: favoriteItems });
-  } else {
-    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favoriteItems)); } catch { /* ignore */ }
-  }
-}
-
-function isFavorite(url: string, kind: string): boolean {
-  return favoriteItems.some(f => f.url === url && f.kind === kind);
-}
-
-// Returns the new state (true = now pinned).
-function toggleFavorite(entry: Omit<RecentItem, 'ts'>): boolean {
-  if (!entry.url) return false;
-  if (isFavorite(entry.url, entry.kind)) {
-    favoriteItems = favoriteItems.filter(f => !(f.url === entry.url && f.kind === entry.kind));
-    saveFavorites();
-    return false;
-  }
-  favoriteItems.unshift({ ...entry, ts: Date.now() });
-  if (favoriteItems.length > MAX_FAVORITES) favoriteItems.length = MAX_FAVORITES;
-  saveFavorites();
-  return true;
-}
-
-loadFavorites();
+// Recent items + Pinned favorites persistence lives in ./state/recents.
+loadRecentsAndFavorites();
 
 // ─── Tools: persisted toggles & page tweaks ──────────────────────────────────
-
-interface ToolsState { showFieldApi: boolean; hideDevBar: boolean; hideLoginAd: boolean; }
-const TOOLS_STATE_KEY = 'sf_spotlight_tools_state';
-let toolsState: ToolsState = { showFieldApi: false, hideDevBar: false, hideLoginAd: false };
-
-function loadToolsState(cb?: () => void): void {
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.get([TOOLS_STATE_KEY], (res: any) => {
-      toolsState = { ...toolsState, ...(res?.[TOOLS_STATE_KEY] || {}) };
-      cb?.();
-    });
-  } else { cb?.(); }
-}
-function saveToolsState(): void {
-  (globalThis as any).chrome?.storage?.local?.set({ [TOOLS_STATE_KEY]: toolsState });
-}
-
-// Inject (or remove) a scoped <style> used to hide page chrome.
-function setHideStyle(id: string, css: string, on: boolean): void {
-  let el = document.getElementById(id) as HTMLStyleElement | null;
-  if (on) {
-    if (!el) { el = document.createElement('style'); el.id = id; (document.head || document.documentElement).appendChild(el); }
-    el.textContent = css;
-  } else {
-    el?.remove();
-  }
-}
-
-function applyHideDevBar(on: boolean): void {
-  setHideStyle('sf-tool-hide-devbar',
-    'one-app-dev-tools-panel, .oneAuraDevToolBar, .auraDevToolBar, .devModeFooter, [class*="auraDevTool"], [class*="DevToolBar"] { display: none !important; }',
-    on);
-}
-function applyHideLoginAd(on: boolean): void {
-  setHideStyle('sf-tool-hide-loginad',
-    '#rightPanel, .right, .loginAd, .right-panel, [id*="rightPanel"], .marketing, .promo, .field.right { display: none !important; }',
-    on);
-}
-
-// Field API-name chips on Lightning record pages.
-let fieldApiTimer: any = null;
-let fieldApiObserver: MutationObserver | null = null;
-function scanFieldApiNames(): void {
-  // Field cells expose data-target-selection-name on the inner div; the API name
-  // is the third dot-segment (e.g. "…​.…​.FieldApiName").
-  const fields = document.querySelectorAll(
-    'record_flexipage-record-field > div, records-record-layout-item > div, div .forcePageBlockItemView'
-  );
-  fields.forEach((field) => {
-    const sel = (field as HTMLElement).dataset?.targetSelectionName;
-    if (!sel) return;
-    const parts = sel.split('.');
-    const api = parts[2] || parts[parts.length - 1];
-    if (!api) return;
-    const labelEl = field.querySelector('span');
-    if (!labelEl) return;
-    if (field.querySelector('.sf-api-chip')) return;
-
-    // Pill: [ ApiName | copy ] — placed inline next to the field label.
-    const chip = document.createElement('span');
-    chip.className = 'sf-api-chip';
-    Object.assign(chip.style, {
-      display: 'inline-flex', alignItems: 'center', gap: '6px', verticalAlign: 'middle', maxWidth: '100%',
-      marginLeft: '6px', padding: '0px 4px 0px 8px', borderRadius: '6px',
-      background: 'rgba(37,99,235,0.10)', border: '1px solid rgba(37,99,235,0.25)',
-      color: '#2563eb', fontSize: '11px', fontWeight: '600', fontFamily: 'monospace', lineHeight: '1.7',
-    });
-
-    const text = document.createElement('span');
-    text.textContent = api;
-    Object.assign(text.style, { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
-
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.title = 'Copy API name';
-    const copyIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-    const okIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-    copyBtn.innerHTML = copyIcon;
-    Object.assign(copyBtn.style, {
-      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '2px',
-      background: 'transparent', border: 'none', borderRadius: '4px', cursor: 'pointer', color: '#2563eb',
-      appearance: 'none', WebkitAppearance: 'none', flexShrink: '0',
-    });
-    copyBtn.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      navigator.clipboard?.writeText(api).then(() => {
-        copyBtn.innerHTML = okIcon;
-        setTimeout(() => { copyBtn.innerHTML = copyIcon; }, 1100);
-      }).catch(() => {});
-    });
-
-    chip.appendChild(text);
-    chip.appendChild(copyBtn);
-    labelEl.insertAdjacentElement('afterend', chip);
-  });
-}
-function applyShowFieldApi(on: boolean): void {
-  if (on) {
-    scanFieldApiNames();
-    if (!fieldApiObserver) {
-      fieldApiObserver = new MutationObserver(() => {
-        clearTimeout(fieldApiTimer);
-        fieldApiTimer = setTimeout(scanFieldApiNames, 400);
-      });
-      try { if (document.body) fieldApiObserver.observe(document.body, { childList: true, subtree: true }); } catch { /* ignore */ }
-    }
-  } else {
-    fieldApiObserver?.disconnect();
-    fieldApiObserver = null;
-    document.querySelectorAll('.sf-api-chip').forEach((e) => e.remove());
-  }
-}
-
-function applyToolToggle(key: keyof ToolsState): void {
-  if (key === 'hideDevBar') applyHideDevBar(toolsState.hideDevBar);
-  else if (key === 'hideLoginAd') applyHideLoginAd(toolsState.hideLoginAd);
-  else if (key === 'showFieldApi') applyShowFieldApi(toolsState.showFieldApi);
-}
-function applyAllToolToggles(): void {
-  applyHideDevBar(toolsState.hideDevBar);
-  applyHideLoginAd(toolsState.hideLoginAd);
-  applyShowFieldApi(toolsState.showFieldApi);
-}
-
+// Tools state + page tweaks live in ./state/toolsState.
 loadToolsState(() => applyAllToolToggles());
 
 // Module-level caches persist across spotlight re-opens.
@@ -453,117 +195,20 @@ let currentUserId: string | null = null;
 
 // ─── Metadata Explorer catalog ───────────────────────────────────────────────
 // Each entry: a metadata type, its query (tooling or data API) and table columns.
-interface MetaColumn { key: string; label: string; }
-interface MetaType { id: string; label: string; icon: string; tooling: boolean; soql: string; columns: MetaColumn[]; idField?: string; }
-const METADATA_CATALOG: MetaType[] = [
-  { id: 'ApexClass', label: 'Apex Classes', icon: '📦', tooling: true, soql: "SELECT Name, ApiVersion, LengthWithoutComments, Status, LastModifiedDate FROM ApexClass ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'ApiVersion', label: 'API' }, { key: 'LengthWithoutComments', label: 'Length' }, { key: 'Status', label: 'Status' }, { key: 'LastModifiedDate', label: 'Modified' }] },
-  { id: 'ApexTrigger', label: 'Apex Triggers', icon: '⚡', tooling: true, soql: "SELECT Name, TableEnumOrId, ApiVersion, Status, LastModifiedDate FROM ApexTrigger ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'TableEnumOrId', label: 'Object' }, { key: 'ApiVersion', label: 'API' }, { key: 'Status', label: 'Status' }, { key: 'LastModifiedDate', label: 'Modified' }] },
-  { id: 'ApexPage', label: 'Visualforce Pages', icon: '📄', tooling: true, soql: "SELECT Name, MasterLabel, ApiVersion, LastModifiedDate FROM ApexPage ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }, { key: 'LastModifiedDate', label: 'Modified' }] },
-  { id: 'ApexComponent', label: 'VF Components', icon: '🧱', tooling: true, soql: "SELECT Name, MasterLabel, ApiVersion, LastModifiedDate FROM ApexComponent ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }, { key: 'LastModifiedDate', label: 'Modified' }] },
-  { id: 'AuraDefinitionBundle', label: 'Aura Components', icon: '🟦', tooling: true, soql: "SELECT DeveloperName, MasterLabel, ApiVersion, LastModifiedDate FROM AuraDefinitionBundle ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }, { key: 'LastModifiedDate', label: 'Modified' }] },
-  { id: 'LightningComponentBundle', label: 'Lightning Web Components', icon: '🔆', tooling: true, soql: "SELECT DeveloperName, MasterLabel, ApiVersion FROM LightningComponentBundle ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'ApiVersion', label: 'API' }] },
-  { id: 'CustomObject', label: 'Custom Objects', icon: '🗃️', tooling: true, soql: "SELECT DeveloperName, NamespacePrefix, ManageableState FROM CustomObject ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'NamespacePrefix', label: 'Namespace' }, { key: 'ManageableState', label: 'State' }] },
-  { id: 'CustomField', label: 'Custom Fields', icon: '🔤', tooling: true, soql: "SELECT DeveloperName, TableEnumOrId, NamespacePrefix FROM CustomField ORDER BY TableEnumOrId LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Field' }, { key: 'TableEnumOrId', label: 'Object' }, { key: 'NamespacePrefix', label: 'Namespace' }] },
-  { id: 'ValidationRule', label: 'Validation Rules', icon: '✅', tooling: true, soql: "SELECT ValidationName, Active, ErrorMessage FROM ValidationRule ORDER BY ValidationName LIMIT 2000", columns: [{ key: 'ValidationName', label: 'Name' }, { key: 'Active', label: 'Active' }, { key: 'ErrorMessage', label: 'Error Message' }] },
-  { id: 'FlowDefinitionView', label: 'Flows', icon: '🌊', tooling: false, idField: 'DurableId', soql: "SELECT DurableId, ApiName, Label, ProcessType, TriggerType, IsActive FROM FlowDefinitionView ORDER BY Label LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'ApiName', label: 'API Name' }, { key: 'ProcessType', label: 'Type' }, { key: 'TriggerType', label: 'Trigger' }, { key: 'IsActive', label: 'Active' }] },
-  { id: 'PermissionSet', label: 'Permission Sets', icon: '🛡️', tooling: false, soql: "SELECT Name, Label, IsOwnedByProfile FROM PermissionSet ORDER BY Name LIMIT 2000", columns: [{ key: 'Label', label: 'Label' }, { key: 'Name', label: 'API Name' }, { key: 'IsOwnedByProfile', label: 'Profile-owned' }] },
-  { id: 'Profile', label: 'Profiles', icon: '👤', tooling: false, soql: "SELECT Name, UserType FROM Profile ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'UserType', label: 'User Type' }] },
-  { id: 'CustomPermission', label: 'Custom Permissions', icon: '🔑', tooling: true, soql: "SELECT DeveloperName, MasterLabel, NamespacePrefix FROM CustomPermission ORDER BY DeveloperName LIMIT 2000", columns: [{ key: 'DeveloperName', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'NamespacePrefix', label: 'Namespace' }] },
-  { id: 'ExternalString', label: 'Custom Labels', icon: '🏷️', tooling: true, soql: "SELECT Name, MasterLabel, Category, Language FROM ExternalString ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'MasterLabel', label: 'Label' }, { key: 'Category', label: 'Category' }, { key: 'Language', label: 'Lang' }] },
-  { id: 'StaticResource', label: 'Static Resources', icon: '📎', tooling: true, soql: "SELECT Name, ContentType, BodyLength, LastModifiedDate FROM StaticResource ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'ContentType', label: 'Content Type' }, { key: 'BodyLength', label: 'Size (bytes)' }, { key: 'LastModifiedDate', label: 'Modified' }] },
-  { id: 'EmailTemplate', label: 'Email Templates', icon: '✉️', tooling: false, soql: "SELECT Name, DeveloperName, FolderName, TemplateType FROM EmailTemplate ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'DeveloperName', label: 'API Name' }, { key: 'FolderName', label: 'Folder' }, { key: 'TemplateType', label: 'Type' }] },
-  { id: 'Report', label: 'Reports', icon: '📊', tooling: false, soql: "SELECT Name, FolderName, Format FROM Report ORDER BY Name LIMIT 2000", columns: [{ key: 'Name', label: 'Name' }, { key: 'FolderName', label: 'Folder' }, { key: 'Format', label: 'Format' }] },
-  { id: 'Dashboard', label: 'Dashboards', icon: '📈', tooling: false, soql: "SELECT Title, FolderName FROM Dashboard ORDER BY Title LIMIT 2000", columns: [{ key: 'Title', label: 'Title' }, { key: 'FolderName', label: 'Folder' }] },
-  { id: 'CronTrigger', label: 'Scheduled Jobs', icon: '⏰', tooling: false, soql: "SELECT CronJobDetail.Name, State, NextFireTime, PreviousFireTime FROM CronTrigger ORDER BY NextFireTime LIMIT 2000", columns: [{ key: 'CronJobDetail.Name', label: 'Job' }, { key: 'State', label: 'State' }, { key: 'NextFireTime', label: 'Next Run' }, { key: 'PreviousFireTime', label: 'Last Run' }] },
-  { id: 'ApexTestRunResult', label: 'Test History', icon: '🧪', tooling: true, soql: "SELECT JobName, Status, StartTime, TestTime, ClassesCompleted, MethodsCompleted, MethodsFailed FROM ApexTestRunResult ORDER BY StartTime DESC LIMIT 1000", columns: [{ key: 'JobName', label: 'Job' }, { key: 'Status', label: 'Status' }, { key: 'StartTime', label: 'Started' }, { key: 'TestTime', label: 'Time (ms)' }, { key: 'MethodsCompleted', label: 'Passed' }, { key: 'MethodsFailed', label: 'Failed' }] },
-];
+// Metadata Explorer catalog (types, queries, columns) lives in ./spotlight/metadataCatalog.
 let cachedApps: any[] | null = null;
 
-// Full-page mode: spotlight.html?host=<sfHost> opens in its own tab, so there's
-// no Salesforce host in window.location — we carry it in the query string.
-const SPOTLIGHT_PAGE = typeof location !== 'undefined' && location.pathname.endsWith('spotlight.html');
-let pageHost: string | null = null;
+// SF host / origin helpers + getSfCredentials live in ./lib/sfUrls.
 // When opened as spotlight.html?...&analyzeLog=<logId>, jump straight into the
 // Log Explorer and open the analyzer for that log.
 let pageAnalyzeLog: string | null = null;
 if (SPOTLIGHT_PAGE) {
-  try {
-    const sp = new URLSearchParams(location.search);
-    pageHost = sp.get('host');
-    pageAnalyzeLog = sp.get('analyzeLog');
-  } catch { pageHost = null; }
-}
-function sfHostname(): string { return pageHost || window.location.hostname; }
-function sfProtocol(): string { return pageHost ? 'https:' : window.location.protocol; }
-
-function cleanSfDomain(domain: string): string {
-  return domain.replace(/\.lightning\.force\./, '.my.salesforce.').replace(/\.mcas\.ms$/, '');
-}
-
-function lightningOrigin(): string {
-  const host = sfHostname()
-    .replace(/\.mcas\.ms$/, '')
-    .replace(/\.my\.salesforce\.com$/, '.lightning.force.com');
-  return `${sfProtocol()}//${host}`;
-}
-
-// Lightning apps open via the Setup domain: <mydomain>.my.salesforce-setup.com
-// using /lightning?appContextId=<AppDefinition DurableId>.
-function setupOrigin(): string {
-  const host = sfHostname()
-    .replace(/\.mcas\.ms$/, '')
-    .replace(/\.lightning\.force\.com$/, '.my.salesforce-setup.com')
-    .replace(/\.my\.salesforce\.com$/, '.my.salesforce-setup.com');
-  return `${sfProtocol()}//${host}`;
-}
-
-function getSfCredentials(): Promise<any> {
-  return new Promise((resolve) => {
-    const chromeRuntime = (globalThis as any).chrome?.runtime;
-    if (!chromeRuntime) return resolve(null);
-    chromeRuntime.sendMessage(
-      { type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(sfHostname()) },
-      (r: any) => resolve(r?.data || null)
-    );
-  });
+  try { pageAnalyzeLog = new URLSearchParams(location.search).get('analyzeLog'); } catch { pageAnalyzeLog = null; }
 }
 
 // ─── Record ID detection & Record Detail viewer ──────────────────────────────
 
-const ID_CHECKSUM_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
-
-// Common key prefixes → friendly label (nice-to-have; the real object name comes
-// from the detail fetch). Not exhaustive — unknown prefixes still open fine.
-const COMMON_PREFIXES: Record<string, string> = {
-  '001': 'Account', '003': 'Contact', '005': 'User', '006': 'Opportunity',
-  '00Q': 'Lead', '500': 'Case', '701': 'Campaign', '800': 'Contract',
-  '0WO': 'Order', '00T': 'Task', '00U': 'Event', '02s': 'Email Message',
-};
-
-// Recomputes the 3-char checksum suffix from the 15-char base of a record Id.
-function computeIdChecksum(id15: string): string {
-  let suffix = '';
-  for (let block = 0; block < 3; block++) {
-    let flags = 0;
-    for (let i = 0; i < 5; i++) {
-      const c = id15.charAt(block * 5 + i);
-      if (c >= 'A' && c <= 'Z') flags += 1 << i;
-    }
-    suffix += ID_CHECKSUM_ALPHABET.charAt(flags);
-  }
-  return suffix;
-}
-
-// 15-char Ids are accepted on format; 18-char Ids are verified via their checksum.
-function isValidSalesforceId(value: string): boolean {
-  if (!value) return false;
-  if (value.length === 15) return /^[a-zA-Z0-9]{15}$/.test(value);
-  if (value.length === 18) {
-    if (!/^[a-zA-Z0-9]{18}$/.test(value)) return false;
-    return computeIdChecksum(value.substring(0, 15)) === value.substring(15).toUpperCase();
-  }
-  return false;
-}
+// Record-Id helpers (checksum, validation, key-prefix labels) live in ./lib/salesforceId.
 
 // Pulls a record Id out of the current page URL (Lightning, classic, or params).
 function extractRecordIdFromUrl(): string | null {
@@ -1064,112 +709,7 @@ function showRecordDetail(recordId: string): void {
   });
 }
 
-// ─── "What's New" update card ────────────────────────────────────────────────
-
-const WHATS_NEW_VERSION_KEY = 'sf_log_analyzer_last_seen_version';
-
-const WHATS_NEW: { icon: string; title: string; desc: string }[] = [
-  { icon: '🔎', title: 'Log Explorer', desc: 'Your debug logs in a sortable table — open, copy, download, delete in bulk, or live-refresh.' },
-  { icon: '📊', title: 'Apex Log Analyzer', desc: 'Click Analyze on any log for a full breakdown across five tabs.' },
-  { icon: '🔥', title: 'Timeline flame chart', desc: 'A zoomable, pannable canvas timeline with an overview strip and rich hover tooltips.' },
-  { icon: '🌳', title: 'Call Tree, Analysis & Database', desc: 'Sortable call tree, bottom-up method aggregation, and grouped SOQL/DML views.' },
-  { icon: '📄', title: 'Raw Log tab', desc: 'Read and filter the unparsed log line-by-line, then copy or download it.' },
-];
-
-function showWhatsNew(version: string): void {
-  const existing = document.getElementById('sf-log-analyzer-whatsnew');
-  if (existing) existing.remove();
-  if (!document.body) return;
-
-  // Persist immediately so the card only appears once across page loads.
-  try { (globalThis as any).chrome?.storage?.local?.set({ [WHATS_NEW_VERSION_KEY]: version }); } catch { /* ignore */ }
-
-  const isDark = currentSpotlightTheme === 'dark';
-  const C = {
-    backdrop: isDark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.3)',
-    modalBg: isDark ? 'rgba(15,23,42,0.96)' : 'rgba(255,255,255,0.98)',
-    border: isDark ? 'rgba(148,163,184,0.25)' : 'rgba(31,41,55,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
-    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
-    textMuted: isDark ? 'rgba(203,213,225,0.75)' : 'rgba(31,41,55,0.65)',
-    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
-    accent: '#2563eb',
-    chip: isDark ? 'rgba(37,99,235,0.2)' : 'rgba(37,99,235,0.1)',
-  };
-
-  const container = document.createElement('div');
-  container.id = 'sf-log-analyzer-whatsnew';
-  Object.assign(container.style, {
-    position: 'fixed', top: '0', left: '0', width: '100%', height: '100%', zIndex: '2147483648',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
-    fontFamily: 'Inter, system-ui, sans-serif',
-  });
-  document.body.appendChild(container);
-
-  const close = () => { document.removeEventListener('keydown', onKey, true); container.remove(); };
-  const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
-  document.addEventListener('keydown', onKey, true);
-
-  const backdrop = document.createElement('div');
-  Object.assign(backdrop.style, { position: 'absolute', top: '0', left: '0', width: '100%', height: '100%', background: C.backdrop, pointerEvents: 'auto', cursor: 'pointer' });
-  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
-  container.appendChild(backdrop);
-
-  const modal = document.createElement('div');
-  Object.assign(modal.style, {
-    position: 'relative', width: '92%', maxWidth: '520px', maxHeight: '85vh', display: 'flex', flexDirection: 'column',
-    background: C.modalBg, backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: '18px',
-    border: `1px solid ${C.border}`, boxShadow: '0 25px 60px rgba(0,0,0,0.45)', overflow: 'hidden', pointerEvents: 'auto', zIndex: '2',
-  });
-  container.appendChild(modal);
-
-  const header = document.createElement('div');
-  Object.assign(header.style, { display: 'flex', alignItems: 'center', gap: '12px', padding: '20px 24px 14px' });
-  const hTitle = document.createElement('div');
-  hTitle.textContent = "What's new";
-  Object.assign(hTitle.style, { fontSize: '20px', fontWeight: '800', color: C.textPrimary, flex: '1' });
-  const vChip = document.createElement('span');
-  vChip.textContent = `v${version}`;
-  Object.assign(vChip.style, { fontSize: '12px', fontWeight: '700', color: C.accent, background: C.chip, padding: '3px 10px', borderRadius: '999px' });
-  header.appendChild(hTitle);
-  header.appendChild(vChip);
-  modal.appendChild(header);
-
-  const list = document.createElement('div');
-  Object.assign(list.style, { padding: '0 24px', overflow: 'auto', flex: '1' });
-  WHATS_NEW.forEach((item) => {
-    const r = document.createElement('div');
-    Object.assign(r.style, { display: 'flex', gap: '14px', padding: '12px 0', borderTop: `1px solid ${C.divider}` });
-    const ic = document.createElement('div');
-    ic.textContent = item.icon; Object.assign(ic.style, { fontSize: '22px', flexShrink: '0', lineHeight: '1.2' });
-    const tx = document.createElement('div');
-    const t = document.createElement('div');
-    t.textContent = item.title; Object.assign(t.style, { fontSize: '15px', fontWeight: '700', color: C.textPrimary });
-    const d = document.createElement('div');
-    d.textContent = item.desc; Object.assign(d.style, { fontSize: '13px', color: C.textMuted, marginTop: '2px', lineHeight: '1.5' });
-    tx.appendChild(t); tx.appendChild(d);
-    r.appendChild(ic); r.appendChild(tx);
-    list.appendChild(r);
-  });
-  modal.appendChild(list);
-
-  const footer = document.createElement('div');
-  Object.assign(footer.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '16px 24px', borderTop: `1px solid ${C.divider}` });
-  const docsLink = document.createElement('a');
-  docsLink.textContent = 'View docs ↗';
-  docsLink.href = 'https://sfspotlight.vercel.app/docs.html';
-  docsLink.target = '_blank'; docsLink.rel = 'noopener noreferrer';
-  Object.assign(docsLink.style, { fontSize: '13px', fontWeight: '600', color: C.textMuted, textDecoration: 'none' });
-  const gotIt = document.createElement('button');
-  gotIt.textContent = 'Got it';
-  Object.assign(gotIt.style, { fontSize: '13px', fontWeight: '700', padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer', background: C.accent, color: '#fff', fontFamily: 'inherit' });
-  gotIt.addEventListener('click', close);
-  footer.appendChild(docsLink);
-  footer.appendChild(gotIt);
-  modal.appendChild(footer);
-
-  container.style.pointerEvents = 'auto';
-}
+// "What's New" update card lives in ./features/whatsNew.
 
 // ─── Org details (shown in-extension, no redirect) ───────────────────────────
 
@@ -3296,12 +2836,12 @@ function buildSpotlight(tabConfig: TabConfig) {
         (r.subtitle || '').toLowerCase().includes(query) ||
         (r.meta || '').toLowerCase().includes(query);
 
-      const favs = favoriteItems.filter(matches);
-      const pinnedKeys = new Set(favoriteItems.map(f => `${f.kind}|${f.url}`));
-      const recents = recentItems.filter(r => !pinnedKeys.has(`${r.kind}|${r.url}`)).filter(matches);
+      const favs = getFavorites().filter(matches);
+      const pinnedKeys = new Set(getFavorites().map(f => `${f.kind}|${f.url}`));
+      const recents = getRecents().filter(r => !pinnedKeys.has(`${r.kind}|${r.url}`)).filter(matches);
 
       if (favs.length === 0 && recents.length === 0) {
-        showMessage(favoriteItems.length === 0 && recentItems.length === 0
+        showMessage(getFavorites().length === 0 && getRecents().length === 0
           ? 'Nothing here yet. Open something, then tap the ☆ to pin it.'
           : 'Nothing matches your search.');
         return;
@@ -4268,7 +3808,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => {
             const version = (globalThis as any).chrome?.runtime?.getManifest?.().version || '';
             hideSpotlightSearch();
-            showWhatsNew(version);
+            showWhatsNew(version, currentSpotlightTheme === 'dark');
           },
         },
       ];
@@ -4902,7 +4442,7 @@ function injectSidebar() {
         if (!manifestVersion || !storage) return;
         storage.get([WHATS_NEW_VERSION_KEY], (res: any) => {
           if (res?.[WHATS_NEW_VERSION_KEY] !== manifestVersion) {
-            setTimeout(() => showWhatsNew(manifestVersion), 600);
+            setTimeout(() => showWhatsNew(manifestVersion, currentSpotlightTheme === 'dark'), 600);
           }
         });
       } catch { /* ignore */ }
@@ -5019,132 +4559,18 @@ function bootFullPageSpotlight() {
   });
 }
 
-// ─── Object Explorer global action ───────────────────────────────────────────
-// Injects an icon into Salesforce's global-actions header. On a record/object
-// page it opens a panel of Object Manager sections for the current object.
-const OBJ_EXPLORER_SECTIONS: { group: string; items: [string, string][] }[] = [
-  { group: 'Schema', items: [['Fields & Relationships', 'FieldsAndRelationships'], ['Compact Layouts', 'CompactLayouts'], ['Field Sets', 'FieldSets'], ['Record Types', 'RecordTypes'], ['Object Limits', 'Limits']] },
-  { group: 'UI', items: [['Page Layouts', 'PageLayouts'], ['Lightning Record Pages', 'LightningPages'], ['Buttons, Links & Actions', 'ButtonsLinksActions'], ['Search Layouts', 'SearchLayouts'], ['List View Button Layout', 'ListViewButtonLayout']] },
-  { group: 'Logic', items: [['Validation Rules', 'ValidationRules'], ['Triggers', 'Triggers'], ['Flow Triggers', 'FlowTriggers'], ['Restriction Rules', 'RestrictionRules'], ['Scoping Rules', 'ScopingRules']] },
-  { group: 'Other', items: [['Related Lookup Filters', 'RelatedLookupFilters'], ['Object Details', 'Details']] },
-];
-
-function toggleObjectExplorerPanel(obj: string): void {
-  const PANEL_ID = 'sf-spotlight-obj-explorer-panel';
-  const existing = document.getElementById(PANEL_ID);
-  if (existing) { existing.remove(); return; }
-
-  // Match the Spotlight theme (light / dark).
-  const isDark = currentSpotlightTheme === 'dark';
-  const P = {
-    bg: isDark ? '#0f172a' : '#ffffff',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.6)' : '#9aa3b2',
-    border: isDark ? 'rgba(148,163,184,0.18)' : '#eef0f3',
-    hover: isDark ? 'rgba(59,130,246,0.18)' : '#eef2ff',
-    accent: '#3b82f6',
-  };
-  const icoUrl = (() => { try { return (globalThis as any).chrome?.runtime?.getURL?.('icons/Spotlite-Icon.svg') || ''; } catch { return ''; } })();
-
-  const origin = lightningOrigin();
-  const panel = document.createElement('div');
-  panel.id = PANEL_ID;
-  Object.assign(panel.style, {
-    position: 'fixed', top: '0', right: '0', width: '340px', maxWidth: '92vw', height: '100vh',
-    background: P.bg, boxShadow: '-8px 0 40px rgba(0,0,0,0.28)', zIndex: '2147483646',
-    display: 'flex', flexDirection: 'column', fontFamily: 'Inter, system-ui, sans-serif', color: P.text,
-    borderLeft: `1px solid ${P.border}`,
-  });
-
-  // header — brand gradient to match the rest of the UI
-  const header = document.createElement('div');
-  Object.assign(header.style, { background: 'linear-gradient(135deg, #4f8cff, #2563eb)', color: '#fff', padding: '16px 18px', display: 'flex', alignItems: 'center', gap: '10px', flexShrink: '0' });
-  const hIco = icoUrl
-    ? `<img src="${icoUrl}" alt="" style="width:22px;height:22px;border-radius:5px;flex-shrink:0;background:rgba(255,255,255,0.18)" />`
-    : `<svg viewBox="0 0 520 520" width="22" height="22" style="fill:#fff;flex-shrink:0"><g><path d="M235 248a63 63 0 00-63 63c0 35 28 63 63 63s63-28 63-63-28-63-63-63z"></path></g></svg>`;
-  header.innerHTML = hIco;
-  const titleWrap = document.createElement('div'); titleWrap.style.flex = '1'; titleWrap.style.minWidth = '0';
-  titleWrap.innerHTML = `<div style="font-weight:800;font-size:15px;line-height:1.2">Object Explorer</div><div style="font-size:12px;opacity:0.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${obj}</div>`;
-  header.appendChild(titleWrap);
-  const closeBtn = document.createElement('button');
-  closeBtn.innerHTML = '✕';
-  Object.assign(closeBtn.style, { background: 'transparent', border: 'none', color: '#fff', fontSize: '18px', cursor: 'pointer', padding: '2px 6px', flexShrink: '0' });
-  closeBtn.addEventListener('click', () => panel.remove());
-  header.appendChild(closeBtn);
-  panel.appendChild(header);
-
-  // body
-  const body = document.createElement('div');
-  Object.assign(body.style, { flex: '1', overflow: 'auto', padding: '8px 0' });
-  panel.appendChild(body);
-  OBJ_EXPLORER_SECTIONS.forEach((sec) => {
-    const gh = document.createElement('div');
-    gh.textContent = sec.group.toUpperCase();
-    Object.assign(gh.style, { fontSize: '10px', fontWeight: '800', letterSpacing: '0.08em', color: P.faint, padding: '14px 18px 4px' });
-    body.appendChild(gh);
-    sec.items.forEach(([label, node]) => {
-      const a = document.createElement('a');
-      a.href = `${origin}/lightning/setup/ObjectManager/${obj}/${node}/view`;
-      a.target = '_blank'; a.rel = 'noopener noreferrer';
-      a.textContent = label;
-      Object.assign(a.style, { display: 'block', padding: '9px 18px 9px 14px', fontSize: '13.5px', color: P.text, textDecoration: 'none', cursor: 'pointer', borderLeft: '4px solid transparent', transition: 'background 0.12s, border-color 0.12s' });
-      // Highlighted section on hover (left accent bar + tint), matching our UI.
-      a.addEventListener('mouseover', () => { a.style.background = P.hover; a.style.color = P.accent; a.style.borderLeftColor = P.accent; a.style.fontWeight = '700'; });
-      a.addEventListener('mouseout', () => { a.style.background = 'transparent'; a.style.color = P.text; a.style.borderLeftColor = 'transparent'; a.style.fontWeight = '400'; });
-      body.appendChild(a);
-    });
-  });
-
-  // footer
-  const footer = document.createElement('a');
-  footer.href = `${origin}/lightning/setup/ObjectManager/${obj}/Details/view`;
-  footer.target = '_blank'; footer.rel = 'noopener noreferrer';
-  footer.textContent = 'Open in Salesforce Setup ↗';
-  Object.assign(footer.style, { flexShrink: '0', textAlign: 'center', padding: '12px', fontSize: '12px', color: P.accent, textDecoration: 'none', borderTop: `1px solid ${P.border}` });
-  panel.appendChild(footer);
-
-  document.body.appendChild(panel);
-  const onOut = (e: MouseEvent) => {
-    const t = e.target as Node;
-    if (!panel.contains(t) && !document.getElementById('sf-spotlight-object-explorer')?.contains(t)) { panel.remove(); document.removeEventListener('mousedown', onOut, true); }
-  };
-  setTimeout(() => document.addEventListener('mousedown', onOut, true), 0);
-}
-
-function injectObjectExplorer(): void {
-  if (SPOTLIGHT_PAGE) return;
-  const ICON_ID = 'sf-spotlight-object-explorer';
-  const ensure = () => {
-    const existingAny = document.getElementById(ICON_ID) as HTMLLIElement | null;
-    if (!objectExplorerEnabled) { existingAny?.remove(); document.getElementById('sf-spotlight-obj-explorer-panel')?.remove(); return; }
-    const ul = document.querySelector('ul.slds-global-actions');
-    if (!ul) return;
-    const obj = detectPageObject();
-    const existing = existingAny;
-    if (!obj) { existing?.remove(); return; } // only on record/object pages
-    if (existing) { existing.dataset.obj = obj; return; }
-    const li = document.createElement('li');
-    li.id = ICON_ID;
-    li.className = 'slds-global-actions__item slds-grid';
-    li.title = 'Object Explorer (SF Spotlight)';
-    li.dataset.obj = obj;
-    Object.assign(li.style, { cursor: 'pointer', display: 'flex', alignItems: 'center' });
-    const icoUrl = (() => { try { return (globalThis as any).chrome?.runtime?.getURL?.('icons/Spotlite-Icon.svg') || ''; } catch { return ''; } })();
-    li.innerHTML = icoUrl
-      ? `<img src="${icoUrl}" alt="Object Explorer" style="width:22px;height:22px;border-radius:5px;display:block" />`
-      : `<svg focusable="false" aria-hidden="true" viewBox="0 0 520 520" class="slds-icon slds-icon_small" style="fill:#5c5c5c"><g><path d="M235 248a63 63 0 00-63 63c0 35 28 63 63 63s63-28 63-63-28-63-63-63z"></path></g></svg>`;
-    li.addEventListener('click', (e) => { e.stopPropagation(); toggleObjectExplorerPanel(li.dataset.obj || obj); });
-    ul.insertBefore(li, ul.firstChild);
-  };
-  ensure();
-  // Header renders late and the SPA swaps pages without reload — re-check periodically.
-  setInterval(ensure, 1500);
-}
-
 function init() {
   if (SPOTLIGHT_PAGE) bootFullPageSpotlight();
-  else { injectSidebar(); injectObjectExplorer(); }
+  else {
+    injectSidebar();
+    initObjectExplorer({
+      isEnabled: () => objectExplorerEnabled,
+      getTheme: () => currentSpotlightTheme,
+      lightningOrigin,
+      detectPageObject,
+      iconUrl: () => { try { return (globalThis as any).chrome?.runtime?.getURL?.('icons/Spotlite-Icon.svg') || ''; } catch { return ''; } },
+    });
+  }
 }
 
 // Wait for DOM to be ready
