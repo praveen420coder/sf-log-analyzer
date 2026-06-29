@@ -995,7 +995,25 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'OPEN_TAB') {
-        if (chromeAPI?.tabs?.create && request.url) chromeAPI.tabs.create({ url: request.url });
+        if (chromeAPI?.tabs?.create && request.url) {
+          // Open right after the tab that triggered it (instead of at the end).
+          const openBeside = (idx?: number, openerTabId?: number) => {
+            const opts: any = { url: request.url, active: true };
+            if (typeof idx === 'number') opts.index = idx + 1;
+            if (typeof openerTabId === 'number') opts.openerTabId = openerTabId;
+            chromeAPI.tabs.create(opts);
+          };
+          if (sender?.tab && typeof sender.tab.index === 'number') {
+            openBeside(sender.tab.index, sender.tab.id);
+          } else if (chromeAPI.tabs.query) {
+            chromeAPI.tabs.query({ active: true, currentWindow: true }, (tabs: any[]) => {
+              const t = tabs && tabs[0];
+              openBeside(t?.index, t?.id);
+            });
+          } else {
+            chromeAPI.tabs.create({ url: request.url });
+          }
+        }
         sendResponse({ success: true });
         return true;
       }

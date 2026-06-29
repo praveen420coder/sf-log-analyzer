@@ -13,6 +13,7 @@ import { SPOTLIGHT_PAGE, sfHostname, sfProtocol, cleanSfDomain, lightningOrigin,
 import { toolsState, loadToolsState, saveToolsState, applyToolToggle, applyShowFieldApi, applyAllToolToggles } from './state/toolsState';
 import type { ToolsState } from './state/toolsState';
 import { showWhatsNew, WHATS_NEW_VERSION_KEY } from './features/whatsNew';
+import { renderPermissionCompareInto } from './features/permissionCompare';
 
 // Settings shape, defaults and persistence live in ./state/settings.
 
@@ -3711,7 +3712,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3721,6 +3722,21 @@ function buildSpotlight(tabConfig: TabConfig) {
         if (toolView === 'release') { renderReleaseInfoInto(resultsContainer, isDark, onBack); return; }
         if (toolView === 'apiusage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '📊  API Usage', fields: API_FIELDS }); return; }
         if (toolView === 'storage') { renderOrgLimitsInto(resultsContainer, isDark, onBack, { title: '💾  Storage Insights', fields: STORAGE_FIELDS }); return; }
+        if (toolView === 'permcompare') {
+          renderPermissionCompareInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            runQuery: (soql: string) => new Promise((resolve) => {
+              getSfCredentials().then((creds: any) => {
+                if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+                (globalThis as any).chrome.runtime.sendMessage(
+                  { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: false },
+                  (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
+                );
+              });
+            }),
+          });
+          return;
+        }
         toolView = null;
       }
 
@@ -3765,6 +3781,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'View this org’s info',
           run: () => { searchInput.value = ''; toolView = 'orgdetails'; performSearch(); },
+        },
+        {
+          id: 'permcompare', icon: '🔐', label: 'Permission Comparison', desc: 'Compare profiles & permission sets',
+          run: () => { searchInput.value = ''; toolView = 'permcompare'; performSearch(); },
         },
         {
           id: 'release', icon: '🚀', label: 'Salesforce Release', desc: 'Current release & updates',
