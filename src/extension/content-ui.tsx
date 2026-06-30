@@ -20,6 +20,9 @@ import { renderAccessExplorerInto } from './features/accessExplorer';
 import { renderOrgLimitsExplorerInto } from './features/orgLimits';
 
 import { enterInspectMode, isInspecting, exitInspectMode } from './features/componentInspector';
+
+import { loadCustomShortcuts, getCustomShortcuts } from './state/customShortcuts';
+import { renderCustomShortcutsInto, resolveShortcutUrl } from './features/customShortcuts';
 import type { BundleInfo } from './features/componentInspector/detect';
 import type { LwcFile } from './features/componentInspector/viewer';
 
@@ -191,6 +194,9 @@ try {
 
 // Recent items + Pinned favorites persistence lives in ./state/recents.
 loadRecentsAndFavorites();
+
+// User-defined Setup shortcuts (shown in Setup search). Lives in ./state/customShortcuts.
+loadCustomShortcuts();
 
 // ─── Tools: persisted toggles & page tweaks ──────────────────────────────────
 // Tools state + page tweaks live in ./state/toolsState.
@@ -2930,13 +2936,38 @@ function buildSpotlight(tabConfig: TabConfig) {
       );
       const filtered = [...labelMatches, ...sectionMatches];
 
-      if (filtered.length === 0) {
+      // User-defined shortcuts that match (shown first, above the built-in links).
+      const customMatches = getCustomShortcuts().filter(s =>
+        s.label.toLowerCase().includes(query) || s.url.toLowerCase().includes(query)
+      );
+
+      if (filtered.length === 0 && customMatches.length === 0) {
         resultsContainer.appendChild(noResults.cloneNode(true));
         return;
       }
 
       const resultsList = document.createElement('div');
-      filtered.forEach((link, index) => {
+
+      customMatches.forEach((s, index) => {
+        const fullUrl = resolveShortcutUrl(s.url);
+        const entry = { kind: 'shortcut', icon: '🔖', title: s.label, subtitle: 'Custom Shortcut', url: fullUrl };
+        resultsList.appendChild(makeResultRow({
+          icon: '🔖',
+          title: s.label,
+          subtitle: 'Custom Shortcut',
+          meta: s.url,
+          first: index === 0,
+          fav: entry,
+          onClick: () => {
+            recordRecent(entry);
+            window.open(fullUrl, '_blank');
+            hideSpotlightSearch();
+          },
+        }));
+      });
+
+      filtered.forEach((link, idx) => {
+        const index = idx + customMatches.length;
         const fullUrl = link.isExternal ? link.link : `${sfProtocol()}//${sfHostname()}${link.link}`;
         const entry = { kind: 'setup', icon: '🔗', title: link.label, subtitle: link.section, url: fullUrl };
         const resultItem = makeResultRow({
@@ -3797,7 +3828,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'orglimits') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'orglimits' || toolView === 'shortcuts') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3822,6 +3853,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         }
         if (toolView === 'accessmap') {
           renderAccessExplorerInto(resultsContainer, { isDark, onBack, flashToast, runQuery: dataQuery });
+          return;
+        }
+        if (toolView === 'shortcuts') {
+          renderCustomShortcutsInto(resultsContainer, { isDark, onBack, flashToast });
           return;
         }
         if (toolView === 'orglimits') {
@@ -3905,6 +3940,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'orglimits', icon: '📈', label: 'Org Limits', desc: 'All org limits & usage',
           run: () => { searchInput.value = ''; toolView = 'orglimits'; performSearch(); },
+        },
+        {
+          id: 'shortcuts', icon: '🔖', label: 'Custom Shortcuts', desc: 'Save your own Setup links',
+          run: () => { searchInput.value = ''; toolView = 'shortcuts'; performSearch(); },
         },
         {
           id: 'inspectlwc', icon: '🔍', label: 'Inspect Components', desc: 'Highlight LWCs on this page (Alt/⌥+Z)',
