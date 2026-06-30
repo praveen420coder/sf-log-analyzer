@@ -76,6 +76,7 @@
                         <a href="#spotlight" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Spotlight Search</a>
                         <a href="#record-id" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Open records by ID</a>
                         <a href="#record-viewer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Record viewer & edit</a>
+                        <a href="#component-inspector" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Component Inspector</a>
                         <a href="#log-explorer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Log Explorer & Analyzer</a>
                         <a href="#dashboard" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Dashboard & Logs</a>
                         <a href="#detail" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Detail View</a>
@@ -90,6 +91,7 @@
                         <a href="#shortcuts" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Keyboard Shortcuts</a>
                         <p class="text-xs font-bold uppercase tracking-wider text-gray-500 mt-5 mb-2 px-3">Reference</p>
                         <a href="#privacy" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Privacy & Permissions</a>
+                        <a href="#disclaimer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Disclaimer & Use</a>
                         <a href="#faq" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">FAQ</a>
                         <a href="#credits" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Credits & Open Source</a>
                     </nav>
@@ -109,10 +111,17 @@
                 <section id="whatsnew" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
-                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.7.0</span>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.8.0</span>
                     </div>
                     <h3>What's New</h3>
-                    <p>The biggest release yet: a brand-new <strong>Log Explorer</strong> and a full visual <strong>Apex Log Analyzer</strong> built right into the panel.</p>
+                    <p>Meet the <strong>Component Inspector</strong> — see every Lightning Web Component on the page, read its source, and edit &amp; deploy your own components without leaving Salesforce.</p>
+                    <h4>v1.8.0 — Component Inspector</h4>
+                    <ul>
+                        <li><strong>One-key reveal</strong> — press <code>Alt+Z</code> (<code>Option+Z</code> on Mac) to outline every custom LWC on the page with its name.</li>
+                        <li><strong>Live source viewer</strong> — click a component to read its <code>html</code> / <code>js</code> / <code>css</code> / <code>meta</code>, pulled via the Tooling API, with one-click copy.</li>
+                        <li><strong>Edit &amp; deploy</strong> — fix your own components inline, with production warnings, a required confirmation on live orgs, and post-deploy verification.</li>
+                        <li><strong>Org Limits tool</strong> — a new Tools-drawer view of every governor &amp; org limit with usage bars, search, sort and a "near limit" filter.</li>
+                    </ul>
                     <h4>v1.7.0 — Log Explorer &amp; the Apex Log Analyzer</h4>
                     <ul>
                         <li><strong>Log Explorer</strong> — your debug logs in a sortable table with Select-All, per-row open / copy / download, a live auto-refresh toggle, bulk delete, and a one-click <strong>Analyze</strong> button on every row.</li>
@@ -214,6 +223,29 @@
                         <li>On save the single field is written back to Salesforce. If Salesforce rejects it (field-level security, a validation rule, a required field), the exact error is shown inline so you can correct it.</li>
                     </ul>
                     <p>Reference (lookup) fields render as links you can follow to the related record.</p>
+                </section>
+
+                <!-- Component Inspector -->
+                <section id="component-inspector" class="doc-section mb-14">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-vector-square"></i></div>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">Alt + Z</span>
+                    </div>
+                    <h3>Component Inspector</h3>
+                    <p>See every Lightning Web Component on the page — then edit it without leaving Salesforce. Press <code>Alt+Z</code> (<code>Option+Z</code> on Mac) on any Salesforce page and every custom LWC lights up with a labeled border. It's an X-ray view of what's actually rendering, mapped straight to the components you own.</p>
+                    <h4>Reveal &amp; read</h4>
+                    <ul>
+                        <li><strong>One-key reveal</strong> — <code>Alt+Z</code> / <code>Option+Z</code> outlines every custom component with its tag name. Press again (or <code>Esc</code>) to exit.</li>
+                        <li><strong>Click to read the source</strong> — open any component's real <code>html</code>, <code>js</code>, <code>css</code> and <code>js-meta.xml</code> in a tabbed viewer, pulled live via the Salesforce Tooling API. Copy any file in a click.</li>
+                        <li><strong>Knows what's yours</strong> — managed-package and base components are clearly marked read-only; only your org's own components are editable.</li>
+                    </ul>
+                    <h4>Edit &amp; deploy — with guardrails</h4>
+                    <ul>
+                        <li><strong>Inline edit</strong> — switch a component you own into edit mode and make quick fixes right in the panel, with per-file change markers.</li>
+                        <li><strong>Production-safe</strong> — every save is confirmed. On a production org you get a red warning and must tick <em>"I understand this edits production"</em> before deploy; sandboxes are detected automatically.</li>
+                        <li><strong>Verified deploys</strong> — after saving, the extension re-reads the component from the org and confirms the change actually landed — "Deployed and verified," not just "request sent." Compile errors are surfaced inline so you can fix and retry.</li>
+                    </ul>
+                    <p class="text-sm text-gray-500">Editing applies to your org's own (unmanaged / unlocked) Lightning Web Components. Salesforce enforces your permissions on every read and deploy.</p>
                 </section>
 
                 <!-- Log Explorer & Analyzer -->
@@ -377,6 +409,7 @@
                                 <tr><td class="py-3 px-5 text-gray-300">Open Spotlight Search</td><td class="py-3 px-5 font-mono text-brand-400">Alt + T</td><td class="py-3 px-5 font-mono text-brand-400">Option + T</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open Log Analyzer Panel</td><td class="py-3 px-5 font-mono text-brand-400">Alt + S</td><td class="py-3 px-5 font-mono text-brand-400">Option + S</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open Record Detail panel</td><td class="py-3 px-5 font-mono text-brand-400">Alt + D</td><td class="py-3 px-5 font-mono text-brand-400">Option + D</td></tr>
+                                <tr><td class="py-3 px-5 text-gray-300">Toggle Component Inspector</td><td class="py-3 px-5 font-mono text-brand-400">Alt + Z</td><td class="py-3 px-5 font-mono text-brand-400">Option + Z</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Close panel / Spotlight</td><td class="py-3 px-5 font-mono text-brand-400">Esc</td><td class="py-3 px-5 font-mono text-brand-400">Esc</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Move through Spotlight results</td><td class="py-3 px-5 font-mono text-brand-400">↑ / ↓</td><td class="py-3 px-5 font-mono text-brand-400">↑ / ↓</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open highlighted result</td><td class="py-3 px-5 font-mono text-brand-400">Enter</td><td class="py-3 px-5 font-mono text-brand-400">Enter</td></tr>
@@ -389,8 +422,24 @@
                 <section id="privacy" class="doc-section mb-14">
                     <div class="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 mb-3"><i class="fa-solid fa-shield-halved"></i></div>
                     <h3>Privacy & Permissions</h3>
-                    <p>SF Spotlight runs entirely in your browser. It uses your existing Salesforce session to read logs and manage trace flags through Salesforce's own APIs — your log data is never sent to a third-party server.</p>
-                    <p>The extension requests host permissions for Salesforce domains (<code>*.salesforce.com</code>, <code>*.force.com</code>, <code>*.visualforce.com</code> and related), plus <code>activeTab</code>, <code>storage</code> (for your settings) and <code>cookies</code> (to detect your session). See the project's <a href="https://github.com/praveen420coder/sf-log-analyzer" target="_blank" class="text-brand-400 hover:underline">PRIVACY_POLICY.md and HOST_PERMISSIONS_JUSTIFICATION.md</a> for the full details.</p>
+                    <p>SF Spotlight runs entirely in your browser. It uses your existing Salesforce session to read logs, metadata and component source, and to manage trace flags, through Salesforce's own APIs — your data is never sent to a third-party server.</p>
+                    <p>The extension requests host permissions for Salesforce domains (<code>*.salesforce.com</code>, <code>*.force.com</code>, <code>*.visualforce.com</code> and related), plus <code>activeTab</code>, <code>storage</code> (for your settings) and <code>cookies</code> (to detect your session). See the project's <a href="https://github.com/praveen420coder/sf-log-analyzer/blob/main/PRIVACY_POLICY.md" target="_blank" class="text-brand-400 hover:underline">Privacy Policy</a> and <a href="https://github.com/praveen420coder/sf-log-analyzer/blob/main/HOST_PERMISSIONS_JUSTIFICATION.md" target="_blank" class="text-brand-400 hover:underline">host-permissions justification</a> for the full details.</p>
+                </section>
+
+                <!-- Disclaimer & Responsible Use -->
+                <section id="disclaimer" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 mb-3"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                    <h3>Disclaimer & Responsible Use</h3>
+
+                    <div class="glass-panel rounded-xl border border-amber-500/40 bg-amber-500/5 p-5 my-4">
+                        <p class="text-amber-200 font-semibold mb-2"><i class="fa-solid fa-flask mr-2"></i>For development &amp; testing — not production.</p>
+                        <p class="text-gray-300 text-sm leading-relaxed mb-0">Do not edit or deploy code directly in a production org with SF Spotlight. Use a <strong>sandbox, scratch org, or development environment</strong>. Changes made with the Component Inspector compile and deploy <strong>immediately</strong> — there is no automatic backup, version control, or undo. For production, use your standard source-controlled deployment process (version control, CI/CD, change sets, or the Metadata API) with proper review and testing.</p>
+                    </div>
+
+                    <h4>Provided "as is" — no warranty, no liability</h4>
+                    <p>SF Spotlight is provided <strong>"as is"</strong>, without warranty of any kind. You use it entirely at your own risk. To the maximum extent permitted by law, the author and contributors <strong>accept no responsibility or liability for any loss, data loss, broken or corrupted metadata, failed or unintended deployments, downtime, or other harm</strong> arising from your use of the extension — including any consequences of reading, editing, saving, or deploying component source or other metadata.</p>
+                    <p>You are solely responsible for any changes you make to your Salesforce org, and for having appropriate backups, permissions, and authorization before making them. When you save a change to a production org, the extension warns you and requires explicit confirmation — but the decision, and its consequences, remain entirely yours.</p>
+                    <p class="text-sm text-gray-500">Full terms are in the project's <a href="https://github.com/praveen420coder/sf-log-analyzer/blob/main/PRIVACY_POLICY.md" target="_blank" class="text-brand-400 hover:underline">Privacy Policy &amp; Terms of Use</a>.</p>
                 </section>
 
                 <!-- FAQ -->

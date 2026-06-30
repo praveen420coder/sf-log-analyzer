@@ -162,6 +162,7 @@
                 <div class="flex flex-wrap justify-center gap-2.5 mb-10 max-w-3xl mx-auto text-sm">
                     <span class="px-3 py-1.5 rounded-full bg-dark-surface/70 border border-dark-border text-gray-300"><i class="fa-solid fa-magnifying-glass text-brand-400 mr-2"></i>Spotlight navigation</span>
                     <span class="px-3 py-1.5 rounded-full bg-dark-surface/70 border border-dark-border text-gray-300"><i class="fa-solid fa-table-list text-sky-400 mr-2"></i>Record viewer &amp; inline edit</span>
+                    <span class="px-3 py-1.5 rounded-full bg-dark-surface/70 border border-brand-500/40 text-gray-300"><i class="fa-solid fa-vector-square text-brand-400 mr-2"></i>Component Inspector</span>
                     <span class="px-3 py-1.5 rounded-full bg-dark-surface/70 border border-dark-border text-gray-300"><i class="fa-solid fa-fire text-purple-400 mr-2"></i>Visual log analyzer</span>
                     <span class="px-3 py-1.5 rounded-full bg-dark-surface/70 border border-dark-border text-gray-300"><i class="fa-solid fa-puzzle-piece text-emerald-400 mr-2"></i>Metadata explorer</span>
                     <span class="px-3 py-1.5 rounded-full bg-dark-surface/70 border border-dark-border text-gray-300"><i class="fa-solid fa-database text-green-400 mr-2"></i>SOQL &amp; data export</span>
@@ -269,6 +270,17 @@
                         <div class="rounded-lg bg-dark-surface/60 border border-dark-border p-4"><div class="text-gray-300 mb-2"><i class="fa-solid fa-file-lines"></i></div><div class="font-semibold text-white mb-1">Raw Log</div><div class="text-gray-400 text-xs leading-relaxed">The unparsed log with instant line filtering.</div></div>
                     </div>
                     <a href="docs.html#log-explorer" class="inline-flex items-center gap-2 mt-5 text-emerald-400 hover:text-emerald-300 text-sm font-semibold">Learn more <i class="fa-solid fa-arrow-right text-xs"></i></a>
+                </div>
+
+                <!-- Component Inspector -->
+                <div class="glass-panel p-8 rounded-xl border border-brand-500/40 hover:border-brand-500/70 transition-all group reveal lg:col-span-2">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-12 h-12 bg-brand-500/15 rounded-lg flex items-center justify-center text-brand-400 text-2xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-vector-square"></i></div>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">New · Alt + Z</span>
+                    </div>
+                    <h4 class="text-xl font-bold text-white mb-3">Component Inspector</h4>
+                    <p class="text-gray-400 text-sm leading-relaxed">X-ray vision for Lightning pages. One keystroke outlines every custom LWC with its name; click to read its full source (HTML/JS/CSS/meta) live via the Tooling API. For components you own, edit and deploy inline — with automatic production warnings and post-deploy verification, so you always know the change landed.</p>
+                    <a href="docs.html#component-inspector" class="inline-flex items-center gap-2 mt-4 text-brand-400 hover:text-brand-300 text-xs font-semibold">Learn more <i class="fa-solid fa-arrow-right text-[10px]"></i></a>
                 </div>
 
                 <!-- Auto-detection -->

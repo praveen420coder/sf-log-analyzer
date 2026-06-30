@@ -17,6 +17,12 @@ import { renderPermissionCompareInto } from './features/permissionCompare';
 import { renderApexTestsInto } from './features/apexTestRunner';
 import { renderAccessExplorerInto } from './features/accessExplorer';
 
+import { renderOrgLimitsExplorerInto } from './features/orgLimits';
+
+import { enterInspectMode, isInspecting, exitInspectMode } from './features/componentInspector';
+import type { BundleInfo } from './features/componentInspector/detect';
+import type { LwcFile } from './features/componentInspector/viewer';
+
 // Settings shape, defaults and persistence live in ./state/settings.
 
 // Tracks the spotlight theme so buildSpotlight() (module-level) can read it.
@@ -3791,7 +3797,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'orglimits') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3816,6 +3822,19 @@ function buildSpotlight(tabConfig: TabConfig) {
         }
         if (toolView === 'accessmap') {
           renderAccessExplorerInto(resultsContainer, { isDark, onBack, flashToast, runQuery: dataQuery });
+          return;
+        }
+        if (toolView === 'orglimits') {
+          const fetchLimits = () => new Promise<{ data?: Record<string, { Max: number; Remaining: number }>; error?: string }>((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { type: 'GET_ORG_LIMITS', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+                (resp: any) => resolve(resp?.success && resp.data ? { data: resp.data } : { error: resp?.error || 'Could not load limits.' }),
+              );
+            });
+          });
+          renderOrgLimitsExplorerInto(resultsContainer, { isDark, onBack, flashToast, fetchLimits });
           return;
         }
         toolView = null;
@@ -3882,6 +3901,14 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'storage', icon: '💾', label: 'Storage Insights', desc: 'Data & file storage',
           run: () => { searchInput.value = ''; toolView = 'storage'; performSearch(); },
+        },
+        {
+          id: 'orglimits', icon: '📈', label: 'Org Limits', desc: 'All org limits & usage',
+          run: () => { searchInput.value = ''; toolView = 'orglimits'; performSearch(); },
+        },
+        {
+          id: 'inspectlwc', icon: '🔍', label: 'Inspect Components', desc: 'Highlight LWCs on this page (Alt/⌥+Z)',
+          run: () => { searchInput.value = ''; launchComponentInspector(); },
         },
         {
           id: 'clearsession', icon: '🧹', label: 'Clear Cache', desc: 'Clear cached session & reload',
@@ -4486,6 +4513,54 @@ function hideSpotlightSearch() {
   }
 }
 
+// Component Inspector launcher — shared by the Tools entry and the Alt/Option+Z
+// shortcut. Toggles: a second invocation while inspecting exits the overlay.
+function launchComponentInspector(): void {
+  if (isInspecting()) { exitInspectMode(); return; }
+  const isDark = currentSpotlightTheme === 'dark';
+  const listBundles = () => new Promise<{ bundles?: BundleInfo[]; error?: string }>((resolve) => {
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+      (globalThis as any).chrome.runtime.sendMessage(
+        { type: 'METADATA_QUERY', tooling: true, instanceUrl: creds.instanceUrl, sessionId: creds.sessionId,
+          query: 'SELECT Id, DeveloperName, NamespacePrefix, MasterLabel FROM LightningComponentBundle ORDER BY DeveloperName LIMIT 2000' },
+        (resp: any) => resolve(resp?.success
+          ? { bundles: (resp.data || []).map((r: any) => ({ id: r.Id, developerName: r.DeveloperName, namespace: r.NamespacePrefix ?? null, masterLabel: r.MasterLabel })) }
+          : { error: resp?.error || 'Could not load components.' }),
+      );
+    });
+  });
+  const fetchSource = (bundleId: string) => new Promise<{ files?: LwcFile[]; error?: string }>((resolve) => {
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+      (globalThis as any).chrome.runtime.sendMessage(
+        { type: 'GET_LWC_SOURCE', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, bundleId },
+        (resp: any) => resolve(resp?.success ? { files: resp.files || [] } : { error: resp?.error || 'Could not load source.' }),
+      );
+    });
+  });
+  const saveSource = (resourceId: string, source: string) => new Promise<{ success?: boolean; error?: string; verified?: boolean | null }>((resolve) => {
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+      (globalThis as any).chrome.runtime.sendMessage(
+        { type: 'SAVE_LWC_SOURCE', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, resourceId, source },
+        (resp: any) => resolve(resp?.success ? { success: true, verified: resp.verified ?? null } : { error: resp?.error || 'Save failed.' }),
+      );
+    });
+  });
+  const getIsSandbox = () => new Promise<boolean | null>((resolve) => {
+    getSfCredentials().then((creds: any) => {
+      if (!creds?.instanceUrl || !creds?.sessionId) { resolve(null); return; }
+      (globalThis as any).chrome.runtime.sendMessage(
+        { type: 'GET_ORG_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+        (resp: any) => resolve(resp?.success && resp.data ? !!resp.data.IsSandbox : null),
+      );
+    });
+  });
+  hideSpotlightSearch();
+  enterInspectMode({ isDark, flashToast, listBundles, fetchSource, saveSource, getIsSandbox, setupUrl: `${lightningOrigin()}/lightning/setup/LightningComponentBundles/home` });
+}
+
 // ─── Sidebar Injection ───────────────────────────────────────────────────────
 
 function injectSidebar() {
@@ -4624,6 +4699,15 @@ function injectSidebar() {
         } else {
           flashToast('No record detected on this page');
         }
+        return false;
+      }
+
+      // Alt+Z / Option+Z to toggle the Component Inspector overlay.
+      // event.code avoids Mac Option char remap (Option+Z → Ω); altKey covers Alt & Option.
+      if (event.altKey && !event.ctrlKey && !event.metaKey && event.code === 'KeyZ') {
+        event.preventDefault();
+        event.stopPropagation();
+        launchComponentInspector();
         return false;
       }
 

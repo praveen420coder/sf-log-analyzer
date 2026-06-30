@@ -1042,6 +1042,65 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'GET_LWC_SOURCE') {
+        // Tooling SOQL returns LightningComponentResource.Source inline, so one
+        // query yields every file (html/js/css/js-meta.xml) for the bundle.
+        const q = `SELECT Id, FilePath, Format, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${request.bundleId}'`;
+        fetch(`${request.instanceUrl}/services/data/v60.0/tooling/query/?q=${encodeURIComponent(q)}`, {
+          headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' },
+        })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 200) || 'Unknown error'}`); })))
+          .then((data) => sendResponse({
+            success: true,
+            files: (data.records || []).map((r: any) => ({ id: r.Id, filePath: r.FilePath, format: r.Format, source: r.Source ?? '' })),
+          }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'SAVE_LWC_SOURCE') {
+        // Phase 2: deploy an edited LWC file by PATCHing the resource's Source.
+        // Salesforce compiles on save; a bad change returns a descriptive error
+        // (HTTP 400 + body) which we surface verbatim to the editor.
+        //
+        // NOTE: MetadataContainer/ContainerAsyncRequest is Apex-only (members are
+        // ApexClass/Trigger/Page/Component) and does NOT support LWC, so direct
+        // CRUD on LightningComponentResource is the only Tooling save path. Our
+        // safety net is verify-after-save: re-read the persisted Source and report
+        // whether it actually matches what we sent.
+        const V = 'v60.0';
+        const auth = { 'Authorization': `Bearer ${request.sessionId}` };
+        const verify = () => {
+          const q = `SELECT Source FROM LightningComponentResource WHERE Id = '${request.resourceId}'`;
+          return fetch(`${request.instanceUrl}/services/data/${V}/tooling/query/?q=${encodeURIComponent(q)}`, { headers: { ...auth, 'Accept': 'application/json' } })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((j) => {
+              const persisted = j?.records?.[0]?.Source;
+              if (typeof persisted !== 'string') return null; // couldn't verify
+              const norm = (s: string) => s.replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').replace(/\n+$/, '');
+              return norm(persisted) === norm(String(request.source));
+            })
+            .catch(() => null);
+        };
+        fetch(`${request.instanceUrl}/services/data/${V}/tooling/sobjects/LightningComponentResource/${request.resourceId}`, {
+          method: 'PATCH',
+          headers: { ...auth, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Source: request.source }),
+        })
+          .then((res) => {
+            if (res.ok || res.status === 204) {
+              return verify().then((verified) => sendResponse({ success: true, verified }));
+            }
+            return res.text().then((t) => {
+              let msg = t;
+              try { const j = JSON.parse(t); const e = Array.isArray(j) ? j[0] : j; msg = e?.message || e?.errorCode || t; } catch { /* keep raw */ }
+              sendResponse({ success: false, error: `HTTP ${res.status}: ${String(msg).substring(0, 400)}` });
+            });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'GET_RELEASE_INFO') {
         // /services/data/ lists supported API versions; the newest label is the
         // release the org is currently running (e.g. "Winter '26").
