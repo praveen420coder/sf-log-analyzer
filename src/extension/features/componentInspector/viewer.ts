@@ -51,6 +51,19 @@ export function openSourceViewer(component: DetectedComponent, deps: ViewerDeps)
     borderLeft: `1px solid ${C.border}`, boxShadow: '-12px 0 32px rgba(0,0,0,0.28)',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   });
+  panel.className = 'sf-lwc-viewer';
+  // Thin scrollbars inside the panel; hide the file-tab strip's scrollbar entirely.
+  const style = document.createElement('style');
+  style.textContent = `
+    .sf-lwc-viewer { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.45) transparent; }
+    .sf-lwc-viewer ::-webkit-scrollbar { width: 9px; height: 9px; }
+    .sf-lwc-viewer ::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.4); border-radius: 6px; }
+    .sf-lwc-viewer ::-webkit-scrollbar-track { background: transparent; }
+    .sf-lwc-viewer ::-webkit-scrollbar-corner { background: transparent; }
+    .sf-lwc-tabs { scrollbar-width: none; }
+    .sf-lwc-tabs::-webkit-scrollbar { display: none; height: 0; }
+  `;
+  panel.appendChild(style);
 
   // header
   const head = el('div', { display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 18px', borderBottom: `1px solid ${C.border}`, flexShrink: '0' });
@@ -75,26 +88,56 @@ export function openSourceViewer(component: DetectedComponent, deps: ViewerDeps)
   const hideBanner = () => { banner.style.display = 'none'; };
 
   // tab strip
-  const tabs = el('div', { display: 'flex', gap: '2px', padding: '8px 12px 0', flexShrink: '0', overflowX: 'auto', borderBottom: `1px solid ${C.border}` });
+  const tabs = el('div', { display: 'flex', gap: '2px', padding: '8px 12px 0', flexShrink: '0', overflowX: 'auto', overflowY: 'hidden', borderBottom: `1px solid ${C.border}` });
+  tabs.className = 'sf-lwc-tabs';
   panel.appendChild(tabs);
 
-  // code area: read-only <pre> and editable <textarea> share the same region
-  const codeWrap = el('div', { flex: '1', minHeight: '0', position: 'relative', background: C.code });
+  // code area: line-number gutter + stacked read-only <pre> / editable <textarea>
+  const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  const codeWrap = el('div', { flex: '1', minHeight: '0', display: 'flex', background: C.code });
+  const gutter = el('div', {
+    flexShrink: '0', minWidth: '46px', textAlign: 'right', padding: '16px 10px 16px 14px', boxSizing: 'border-box',
+    overflow: 'hidden', userSelect: 'none', color: C.muted, fontSize: '12.5px', lineHeight: '1.6', fontFamily: MONO,
+    whiteSpace: 'pre', background: isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)', borderRight: `1px solid ${C.border}`,
+  });
+  const codeArea = el('div', { position: 'relative', flex: '1', minHeight: '0' });
   const pre = el('pre', {
-    margin: '0', padding: '16px 18px', height: '100%', boxSizing: 'border-box', overflow: 'auto',
-    fontSize: '12.5px', lineHeight: '1.6', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-    whiteSpace: 'pre', color: C.text,
+    margin: '0', padding: '16px 18px', position: 'absolute', inset: '0', overflow: 'auto',
+    fontSize: '12.5px', lineHeight: '1.6', fontFamily: MONO, whiteSpace: 'pre', color: C.text,
   });
   const editor = el('textarea', {
     display: 'none', position: 'absolute', inset: '0', width: '100%', height: '100%', boxSizing: 'border-box',
     margin: '0', padding: '16px 18px', border: 'none', outline: 'none', resize: 'none', background: C.code, color: C.text,
-    fontSize: '12.5px', lineHeight: '1.6', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-    whiteSpace: 'pre', tabSize: '4' as any,
+    fontSize: '12.5px', lineHeight: '1.6', fontFamily: MONO, whiteSpace: 'pre', tabSize: '2' as any,
   }) as HTMLTextAreaElement;
   editor.spellcheck = false;
-  codeWrap.appendChild(pre);
-  codeWrap.appendChild(editor);
+  codeArea.appendChild(pre);
+  codeArea.appendChild(editor);
+  codeWrap.appendChild(gutter);
+  codeWrap.appendChild(codeArea);
   panel.appendChild(codeWrap);
+
+  // status bar (format · lines · chars · dirty)
+  const status = el('div', { display: 'flex', alignItems: 'center', gap: '12px', padding: '5px 16px', flexShrink: '0', borderTop: `1px solid ${C.border}`, fontSize: '11px', color: C.muted, fontFamily: MONO });
+  panel.appendChild(status);
+
+  let gutterLines = 0;
+  function updateGutter(text: string): void {
+    const n = Math.max(1, text.split('\n').length);
+    if (n !== gutterLines) {
+      gutterLines = n;
+      let s = '';
+      for (let i = 1; i <= n; i++) s += (i === 1 ? '' : '\n') + i;
+      gutter.textContent = s;
+    }
+  }
+  function updateStatus(text: string): void {
+    const lines = text.split('\n').length;
+    const fmt = files[active]?.format || '';
+    status.textContent = `${fmt}  ·  ${lines} line${lines === 1 ? '' : 's'}  ·  ${text.length} chars${isDirty(active) ? '  ·  ● unsaved' : ''}`;
+  }
+  pre.addEventListener('scroll', () => { gutter.scrollTop = pre.scrollTop; });
+  editor.addEventListener('scroll', () => { gutter.scrollTop = editor.scrollTop; });
 
   // footer with mode-dependent actions
   const foot = el('div', { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 16px', borderTop: `1px solid ${C.border}`, flexShrink: '0', fontSize: '12px' });
@@ -127,20 +170,71 @@ export function openSourceViewer(component: DetectedComponent, deps: ViewerDeps)
 
   function paintCode(): void {
     const f = files[active];
+    const text = edited[active] ?? f?.source ?? '';
     if (editing) {
       pre.style.display = 'none';
       editor.style.display = 'block';
-      editor.value = edited[active] ?? f?.source ?? '';
+      editor.value = text;
       editor.focus();
     } else {
       editor.style.display = 'none';
       pre.style.display = 'block';
-      pre.textContent = edited[active] ?? f?.source ?? '';
+      pre.textContent = text;
       pre.scrollTop = 0;
     }
+    gutter.scrollTop = 0;
+    updateGutter(text);
+    updateStatus(text);
   }
 
-  editor.addEventListener('input', () => { edited[active] = editor.value; paintTabs(); });
+  editor.addEventListener('input', () => {
+    edited[active] = editor.value;
+    paintTabs();
+    updateGutter(editor.value);
+    updateStatus(editor.value);
+  });
+
+  // Editor keybindings: Tab/Shift+Tab to (un)indent, Cmd/Ctrl+S to save.
+  editor.addEventListener('keydown', (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      triggerSave();
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const INDENT = '  ';
+      const start = editor.selectionStart, end = editor.selectionEnd;
+      const val = editor.value;
+      if (!e.shiftKey && start === end) {
+        editor.value = val.slice(0, start) + INDENT + val.slice(end);
+        editor.selectionStart = editor.selectionEnd = start + INDENT.length;
+      } else {
+        // (un)indent every line the selection touches
+        const ls = val.lastIndexOf('\n', start - 1) + 1;
+        const before = val.slice(0, ls);
+        const block = val.slice(ls, end);
+        const rest = val.slice(end);
+        let delta = 0, firstDelta = 0, first = true;
+        const lines = block.split('\n').map((ln) => {
+          if (e.shiftKey) {
+            const rm = ln.startsWith('  ') ? 2 : ln.startsWith(' ') ? 1 : 0;
+            delta -= rm; if (first) firstDelta = -rm;
+            first = false;
+            return ln.slice(rm);
+          }
+          delta += INDENT.length; if (first) firstDelta = INDENT.length;
+          first = false;
+          return INDENT + ln;
+        });
+        editor.value = before + lines.join('\n') + rest;
+        editor.selectionStart = Math.max(ls, start + firstDelta);
+        editor.selectionEnd = end + delta;
+      }
+      edited[active] = editor.value;
+      paintTabs(); updateGutter(editor.value); updateStatus(editor.value);
+    }
+  });
 
   function paintFoot(): void {
     foot.innerHTML = '';
@@ -164,13 +258,19 @@ export function openSourceViewer(component: DetectedComponent, deps: ViewerDeps)
       foot.appendChild(el('span', { marginLeft: 'auto', color: C.muted, fontSize: '11px' }, component.bundleId));
     } else {
       const saveBtn = btn('Save & Deploy', 'accent');
+      saveBtnRef = saveBtn;
       saveBtn.addEventListener('click', () => doSave(saveBtn));
       foot.appendChild(saveBtn);
       const cancelBtn = btn('Cancel', 'plain');
       cancelBtn.addEventListener('click', cancelEdit);
       foot.appendChild(cancelBtn);
-      foot.appendChild(el('span', { marginLeft: 'auto', color: C.muted, fontSize: '11px' }, anyDirty() ? 'Unsaved changes' : 'No changes'));
+      foot.appendChild(el('span', { marginLeft: 'auto', color: C.muted, fontSize: '11px' }, '⌘/Ctrl+S to save · Tab to indent'));
     }
+  }
+
+  let saveBtnRef: HTMLButtonElement | null = null;
+  function triggerSave(): void {
+    if (editing && saveBtnRef) doSave(saveBtnRef);
   }
 
   function btn(label: string, kind: 'accent' | 'plain' | 'danger'): HTMLButtonElement {
@@ -223,7 +323,7 @@ export function openSourceViewer(component: DetectedComponent, deps: ViewerDeps)
           } else {
             showBanner(resp.verified === true ? '✓ Deployed and verified in the org.' : '✓ Deployed successfully.', 'info');
           }
-          paintTabs(); paintFoot();
+          paintTabs(); paintFoot(); updateStatus(files[active].source);
         } else {
           showBanner(resp.error || 'Save failed.', 'error');
         }

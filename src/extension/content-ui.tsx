@@ -9,7 +9,7 @@ import { loadRecentsAndFavorites, getRecents, getFavorites, recordRecent, clearR
 import type { RecentItem } from './state/recents';
 import { STORAGE_KEY, loadSettings, persistSettings, saveSpotlightTheme } from './state/settings';
 import type { ExtensionSettings } from './state/settings';
-import { SPOTLIGHT_PAGE, sfHostname, sfProtocol, cleanSfDomain, lightningOrigin, setupOrigin, getSfCredentials } from './lib/sfUrls';
+import { SPOTLIGHT_PAGE, sfHostname, cleanSfDomain, lightningOrigin, setupOrigin, getSfCredentials, activeSfHost } from './lib/sfUrls';
 import { toolsState, loadToolsState, saveToolsState, applyToolToggle, applyShowFieldApi, applyAllToolToggles } from './state/toolsState';
 import type { ToolsState } from './state/toolsState';
 import { showWhatsNew, WHATS_NEW_VERSION_KEY } from './features/whatsNew';
@@ -23,6 +23,9 @@ import { enterInspectMode, isInspecting, exitInspectMode } from './features/comp
 
 import { loadCustomShortcuts, getCustomShortcuts } from './state/customShortcuts';
 import { renderCustomShortcutsInto, resolveShortcutUrl } from './features/customShortcuts';
+
+import { loadVisitedOrgs, recordVisitedOrg } from './state/sessions';
+import { renderSessionSwitcherInto } from './features/sessionSwitcher';
 import type { BundleInfo } from './features/componentInspector/detect';
 import type { LwcFile } from './features/componentInspector/viewer';
 
@@ -114,15 +117,15 @@ interface SpotlightTab { id: string; label: string; placeholder: string; icon: s
 const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
   { id: 'tools', label: 'Tools', placeholder: 'Search tools & actions...', icon: '🛠️' },
   { id: 'setup', label: 'Setup', placeholder: 'Search Salesforce Setup...', icon: '🏠' },
-  { id: 'recent', label: 'Recent', placeholder: 'Search recently opened...', icon: '🕘' },
-  { id: 'objects', label: 'Objects', placeholder: 'Search Objects...', icon: '📦' },
-  { id: 'metadata', label: 'Metadata Explorer', placeholder: 'Search metadata types...', icon: '🧩' },
   { id: 'users', label: 'Users', placeholder: 'Search Users...', icon: '👤' },
-  { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
   { id: 'flows', label: 'Flows', placeholder: 'Search Flows...', icon: '⚡' },
+  { id: 'metadata', label: 'Metadata Explorer', placeholder: 'Search metadata types...', icon: '🧩' },
+  { id: 'security', label: 'Security', placeholder: 'Search Permission Sets, Groups & Profiles...', icon: '🔑' },
   { id: 'debug', label: 'Log Explorer', placeholder: 'Search your debug logs...', icon: '🐞' },
+  { id: 'objects', label: 'Objects', placeholder: 'Search Objects...', icon: '📦' },
   { id: 'apextests', label: 'Apex Tests', placeholder: 'Search tests...', icon: '🧪' },
   { id: 'access', label: 'Access Explorer', placeholder: 'Access map...', icon: '🗺️' },
+  { id: 'recent', label: 'Recent', placeholder: 'Search recently opened...', icon: '🕘' },
   { id: 'apps', label: 'Apps & Tabs', placeholder: 'Search apps & tabs...', icon: '🚀' }
 ];
 
@@ -197,6 +200,9 @@ loadRecentsAndFavorites();
 
 // User-defined Setup shortcuts (shown in Setup search). Lives in ./state/customShortcuts.
 loadCustomShortcuts();
+
+// Visited orgs for the footer session switcher. Lives in ./state/sessions.
+loadVisitedOrgs();
 
 // ─── Tools: persisted toggles & page tweaks ──────────────────────────────────
 // Tools state + page tweaks live in ./state/toolsState.
@@ -2187,14 +2193,6 @@ function buildSpotlight(tabConfig: TabConfig) {
   resultsContainer.appendChild(noResults);
 
   // ─── Footer (brand + keyboard hints) ───────────────────────
-  // Show "Alt" on Windows/Linux and "⌥" on macOS for the toggle shortcut.
-  const isMacPlatform = (() => {
-    const uaPlatform = (navigator as any).userAgentData?.platform;
-    if (uaPlatform) return /mac/i.test(uaPlatform);
-    return /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
-  })();
-  const toggleKey = isMacPlatform ? '⌥T' : 'Alt + T';
-
   const hintsBar = document.createElement('div');
   hintsBar.style.display = 'flex';
   hintsBar.style.alignItems = 'center';
@@ -2242,10 +2240,8 @@ function buildSpotlight(tabConfig: TabConfig) {
   hintsRight.style.justifyContent = 'flex-end';
 
   const hints = [
-    { key: '↑↓', label: 'navigate' },
     { key: '⏎', label: 'open' },
     { key: 'esc', label: 'close' },
-    { key: toggleKey, label: 'toggle' },
   ];
 
   hints.forEach(hint => {
@@ -2309,6 +2305,10 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   hintsBar.appendChild(brand);
 
+  // Reloads the footer identity (greet + org badges) for the ACTIVE session —
+  // assigned inside the full-page block, re-invoked by the session switcher.
+  let refreshGreet: (() => void) | null = null;
+
   // Full-page footer greets the logged-in user in a colourful badge.
   if (fullPage) {
     const isDark = currentSpotlightTheme === 'dark';
@@ -2334,18 +2334,6 @@ function buildSpotlight(tabConfig: TabConfig) {
     hintsBar.appendChild(greet);
 
     const initialsOf = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || '').join('') || 'U';
-    getSfCredentials().then((creds: any) => {
-      if (!creds?.instanceUrl || !creds?.sessionId) { nm.textContent = 'Guest'; avatar.textContent = 'G'; return; }
-      (globalThis as any).chrome?.runtime?.sendMessage({ type: 'FETCH_USER_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId }, (r: any) => {
-        if (r?.success && r.data) {
-          const name = r.data.displayName || r.data.name || 'User';
-          const email = r.data.email || r.data.username || '';
-          nm.textContent = name;
-          avatar.textContent = initialsOf(name);
-          if (email) { em.textContent = email; em.style.display = ''; }
-        } else { nm.textContent = 'User'; avatar.textContent = 'U'; }
-      });
-    });
 
     // Org-context badges: edition · instance · API version · release.
     const badges = document.createElement('div');
@@ -2362,23 +2350,66 @@ function buildSpotlight(tabConfig: TabConfig) {
     const bInst = mkBadge(isDark ? '#93c5fd' : '#1d4ed8', 'rgba(59,130,246,0.14)', 'rgba(59,130,246,0.35)');
     const bVer = mkBadge(isDark ? '#86efac' : '#15803d', 'rgba(34,197,94,0.14)', 'rgba(34,197,94,0.35)');
     const bRel = mkBadge(isDark ? '#c4b5fd' : '#7c3aed', 'rgba(168,85,247,0.14)', 'rgba(168,85,247,0.35)');
+
+    refreshGreet = () => {
+      nm.textContent = 'Loading…'; em.style.display = 'none'; avatar.textContent = '…';
+      [bEd, bInst, bVer, bRel].forEach((b) => { b.style.display = 'none'; });
+      getSfCredentials().then((creds: any) => {
+        if (!creds?.instanceUrl || !creds?.sessionId) { nm.textContent = 'Guest'; avatar.textContent = 'G'; return; }
+        const msg = { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId };
+        (globalThis as any).chrome?.runtime?.sendMessage({ type: 'FETCH_USER_INFO', ...msg }, (r: any) => {
+          if (r?.success && r.data) {
+            const name = r.data.displayName || r.data.name || 'User';
+            const email = r.data.email || r.data.username || '';
+            nm.textContent = name;
+            avatar.textContent = initialsOf(name);
+            if (email) { em.textContent = email; em.style.display = ''; }
+          } else { nm.textContent = 'User'; avatar.textContent = 'U'; }
+        });
+        (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_ORG_INFO', ...msg }, (r: any) => {
+          if (r?.success && r.data) {
+            fillBadge(bEd, '🏛️', r.data.OrganizationType || '');
+            fillBadge(bInst, '📍', r.data.InstanceName || '');
+          }
+        });
+        (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_RELEASE_INFO', ...msg }, (r: any) => {
+          if (r?.success && r.data) {
+            fillBadge(bVer, '‹›', r.data.version || '');
+            fillBadge(bRel, '☁️', r.data.label || '');
+          }
+        });
+      });
+    };
+    refreshGreet();
+  }
+
+  // ── Footer session switcher: retarget the panel to another org you've visited.
+  let sessionSwitcher: { refresh: () => void } | null = null;
+  const recordActiveOrg = () => {
+    const host = activeSfHost();
     getSfCredentials().then((creds: any) => {
       if (!creds?.instanceUrl || !creds?.sessionId) return;
       const msg = { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId };
       (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_ORG_INFO', ...msg }, (r: any) => {
-        if (r?.success && r.data) {
-          fillBadge(bEd, '🏛️', r.data.OrganizationType || '');
-          fillBadge(bInst, '📍', r.data.InstanceName || '');
-        }
-      });
-      (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_RELEASE_INFO', ...msg }, (r: any) => {
-        if (r?.success && r.data) {
-          fillBadge(bVer, '‹›', r.data.version || '');
-          fillBadge(bRel, '☁️', r.data.label || '');
-        }
+        const label = (r?.success && r.data && (r.data.Name || r.data.InstanceName)) || host;
+        (globalThis as any).chrome?.runtime?.sendMessage({ type: 'FETCH_USER_INFO', ...msg }, (u: any) => {
+          const user = (u?.success && u.data && (u.data.displayName || u.data.name || u.data.username)) || undefined;
+          recordVisitedOrg({ host, instanceUrl: creds.instanceUrl, label, user });
+          sessionSwitcher?.refresh();
+        });
       });
     });
-  }
+  };
+
+  const switcherWrap = document.createElement('div');
+  Object.assign(switcherWrap.style, { marginLeft: '12px', flexShrink: '0' });
+  hintsBar.appendChild(switcherWrap);
+  sessionSwitcher = renderSessionSwitcherInto(switcherWrap, {
+    isDark: currentSpotlightTheme === 'dark',
+    flashToast,
+    onSwitched: () => { refreshGreet?.(); recordActiveOrg(); performSearch(); },
+  });
+  recordActiveOrg();
 
   hintsBar.appendChild(hintsRight);
 
@@ -2968,7 +2999,7 @@ function buildSpotlight(tabConfig: TabConfig) {
 
       filtered.forEach((link, idx) => {
         const index = idx + customMatches.length;
-        const fullUrl = link.isExternal ? link.link : `${sfProtocol()}//${sfHostname()}${link.link}`;
+        const fullUrl = link.isExternal ? link.link : `${lightningOrigin()}${link.link}`;
         const entry = { kind: 'setup', icon: '🔗', title: link.label, subtitle: link.section, url: fullUrl };
         const resultItem = makeResultRow({
           icon: '🔗',

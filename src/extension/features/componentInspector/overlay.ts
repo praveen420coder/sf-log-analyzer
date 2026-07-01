@@ -71,12 +71,22 @@ export function createHighlightOverlay(components: DetectedComponent[], opts: Ov
       const badge = document.createElement('button');
       Object.assign(badge.style, {
         position: 'absolute', top: '-1px', left: '-1px', transform: 'translateY(-100%)',
+        display: 'inline-flex', alignItems: 'center', gap: '5px',
         background: color, color: '#fff', border: 'none', borderRadius: '4px 4px 4px 0',
         padding: '2px 7px', font: '600 11px/1.4 inherit', cursor: 'pointer', pointerEvents: 'auto',
-        whiteSpace: 'nowrap', maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap', maxWidth: '340px', overflow: 'hidden',
       });
-      badge.textContent = `${c.tag}${c.editable ? '' : ' · managed'}`;
-      badge.title = c.editable ? 'View source' : 'Managed package — view source';
+      // Editable components get a small pencil chip; managed ones a lock.
+      const glyph = document.createElement('span');
+      Object.assign(glyph.style, { fontSize: '10px', opacity: '0.95', flexShrink: '0' });
+      glyph.textContent = c.editable ? '✎' : '🔒';
+      const name = document.createElement('span');
+      Object.assign(name.style, { overflow: 'hidden', textOverflow: 'ellipsis' });
+      name.textContent = c.tag;
+      badge.appendChild(glyph);
+      badge.appendChild(name);
+      if (!c.editable) { const m = document.createElement('span'); Object.assign(m.style, { opacity: '0.75', flexShrink: '0' }); m.textContent = '· managed'; badge.appendChild(m); }
+      badge.title = c.editable ? 'Editable — click to view & edit source' : 'Managed package — view source (read-only)';
       badge.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); opts.onPick(c); });
       box.appendChild(badge);
       layer.appendChild(box);
