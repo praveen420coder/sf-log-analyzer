@@ -18,6 +18,11 @@ import { renderApexTestsInto } from './features/apexTestRunner';
 import { renderAccessExplorerInto } from './features/accessExplorer';
 
 import { renderOrgLimitsExplorerInto } from './features/orgLimits';
+import { renderObjectManagerInto } from './features/objectManager';
+import type { SfObjectRef, FlsTarget } from './features/objectManager';
+import { renderAutomationMapInto } from './features/automationMap';
+import type { AutomationData } from './features/automationMap';
+import { renderExecuteAnonymousInto } from './features/executeAnonymous';
 
 import { enterInspectMode, isInspecting, exitInspectMode } from './features/componentInspector';
 
@@ -3859,7 +3864,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'orglimits' || toolView === 'shortcuts') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3901,6 +3906,76 @@ function buildSpotlight(tabConfig: TabConfig) {
             });
           });
           renderOrgLimitsExplorerInto(resultsContainer, { isDark, onBack, flashToast, fetchLimits });
+          return;
+        }
+        if (toolView === 'objectmanager') {
+          // Generic background bridge: attaches org credentials to every message
+          // so the Object Manager feature stays chrome-free.
+          const sendBg = <T,>(msg: Record<string, unknown>): Promise<T> => new Promise((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' } as T); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...msg },
+                (resp: any) => resolve((resp ?? { success: false, error: 'No response from extension' }) as T),
+              );
+            });
+          });
+          renderObjectManagerInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            setupOrigin,
+            listObjects: () => sendBg<{ success: boolean; data?: any[]; error?: string }>({ type: 'GET_ALL_OBJECTS' })
+              .then((r) => (r.success && r.data
+                ? { data: r.data.map((o: any): SfObjectRef => ({ apiName: o.QualifiedApiName, label: o.Label || o.QualifiedApiName, custom: /__c$/i.test(o.QualifiedApiName) })).sort((a: SfObjectRef, b: SfObjectRef) => a.label.localeCompare(b.label)) }
+                : { error: r.error || 'Could not load objects.' })),
+            createObject: (fullName, metadata) => sendBg({ type: 'CREATE_CUSTOM_OBJECT', fullName, metadata }),
+            createField: (fullName, metadata) => sendBg({ type: 'CREATE_CUSTOM_FIELD', fullName, metadata }),
+            listFlsTargets: () => sendBg<{ success: boolean; data?: FlsTarget[]; error?: string }>({ type: 'GET_FLS_TARGETS' })
+              .then((r) => (r.success && r.data ? { data: r.data } : { error: r.error || 'Could not load permission sets.' })),
+            grantFls: (grants) => sendBg({ type: 'GRANT_FIELD_PERMISSIONS', grants }),
+          });
+          return;
+        }
+        if (toolView === 'executeanonymous') {
+          const sendBg = <T,>(msg: Record<string, unknown>): Promise<T> => new Promise((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' } as T); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...msg },
+                (resp: any) => resolve((resp ?? { success: false, error: 'No response from extension' }) as T),
+              );
+            });
+          });
+          renderExecuteAnonymousInto(resultsContainer, {
+            isDark, flashToast, onBack,
+            execute: (apexBody, logLevel) => sendBg({ type: 'EXECUTE_ANONYMOUS', apexBody, logLevel }),
+            renderAnalyzer: (analyzerHost, logBody, name, backToTool) => {
+              analyzerHost.innerHTML = '';
+              renderLogAnalyzerInto(analyzerHost, logBody, { isDark, logName: name, onBack: backToTool });
+            },
+          });
+          return;
+        }
+        if (toolView === 'automationmap') {
+          const sendBg = <T,>(msg: Record<string, unknown>): Promise<T> => new Promise((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' } as T); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...msg },
+                (resp: any) => resolve((resp ?? { success: false, error: 'No response from extension' }) as T),
+              );
+            });
+          });
+          renderAutomationMapInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            lightningOrigin,
+            openUrl: (url) => { (globalThis as any).chrome.runtime.sendMessage({ type: 'OPEN_TAB', url }); },
+            listObjects: () => sendBg<{ success: boolean; data?: any[]; error?: string }>({ type: 'GET_ALL_OBJECTS' })
+              .then((r) => (r.success && r.data
+                ? { data: r.data.map((o: any): SfObjectRef => ({ apiName: o.QualifiedApiName, label: o.Label || o.QualifiedApiName, custom: /__c$/i.test(o.QualifiedApiName) })).sort((a: SfObjectRef, b: SfObjectRef) => a.label.localeCompare(b.label)) }
+                : { error: r.error || 'Could not load objects.' })),
+            fetchAutomation: (objectApiName) => sendBg<{ success: boolean; data?: AutomationData; error?: string }>({ type: 'GET_OBJECT_AUTOMATION', objectApiName })
+              .then((r) => (r.success && r.data ? { data: r.data } : { error: r.error || 'Could not load automation.' })),
+          });
           return;
         }
         toolView = null;
@@ -3947,6 +4022,18 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'View this org’s info',
           run: () => { searchInput.value = ''; toolView = 'orgdetails'; performSearch(); },
+        },
+        {
+          id: 'objectmanager', icon: '🛠️', label: 'Object Manager', desc: 'Create objects & fields with FLS',
+          run: () => { searchInput.value = ''; toolView = 'objectmanager'; performSearch(); },
+        },
+        {
+          id: 'automationmap', icon: '🧭', label: 'Automation Map', desc: 'What fires on save, in order',
+          run: () => { searchInput.value = ''; toolView = 'automationmap'; performSearch(); },
+        },
+        {
+          id: 'executeanonymous', icon: '⚡', label: 'Execute Anonymous', desc: 'Run Apex & analyze the debug log',
+          run: () => { searchInput.value = ''; toolView = 'executeanonymous'; performSearch(); },
         },
         {
           id: 'permcompare', icon: '🔐', label: 'Permission Comparison', desc: 'Compare profiles & permission sets',

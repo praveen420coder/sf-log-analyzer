@@ -1162,6 +1162,281 @@ if (chromeRuntime) {
         return true;
       }
 
+      // ── Object Manager (create objects / fields) ────────────────────────
+      // Salesforce error bodies are JSON arrays like [{message, errorCode}] —
+      // surface the message verbatim (it's the same text Setup would show,
+      // e.g. "There is already a field named X on this object").
+      const sfErrorText = (status: number, text: string): string => {
+        try {
+          const j = JSON.parse(text);
+          const e = Array.isArray(j) ? j[0] : j;
+          if (e?.message) return String(e.message);
+        } catch { /* keep raw */ }
+        return `HTTP ${status}: ${text.substring(0, 300) || 'Unknown error'}`;
+      };
+
+      if (request.type === 'CREATE_CUSTOM_OBJECT') {
+        // Custom objects can't be created through the Tooling API's CustomObject
+        // sObject — unlike CustomField, it doesn't expose the FullName/Metadata
+        // fields, so a POST there fails with "No such column 'FullName' on
+        // sobject of type CustomObject". Object creation goes through the
+        // Metadata API's synchronous createMetadata() SOAP call instead.
+        // `request.metadata` is already in the Metadata API CustomObject shape.
+        const xmlEsc = (v: unknown) => String(v)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        const xmlUnesc = (s: string) => s
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+        // Serialize a flat/nested metadata object into <met:key>value</met:key>.
+        const toMetXml = (obj: Record<string, unknown>): string =>
+          Object.entries(obj)
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) =>
+              typeof v === 'object'
+                ? `<met:${k}>${toMetXml(v as Record<string, unknown>)}</met:${k}>`
+                : `<met:${k}>${xmlEsc(v)}</met:${k}>`)
+            .join('');
+
+        const md = request.metadata as Record<string, unknown>;
+        const envelope =
+          `<?xml version="1.0" encoding="UTF-8"?>` +
+          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:met="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">` +
+          `<soapenv:Header><met:SessionHeader><met:sessionId>${xmlEsc(request.sessionId)}</met:sessionId></met:SessionHeader></soapenv:Header>` +
+          `<soapenv:Body><met:createMetadata>` +
+          `<met:metadata xsi:type="met:CustomObject">` +
+          `<met:fullName>${xmlEsc(request.fullName)}</met:fullName>` +
+          toMetXml(md) +
+          `</met:metadata></met:createMetadata></soapenv:Body></soapenv:Envelope>`;
+
+        fetch(`${request.instanceUrl}/services/Soap/m/60.0`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/xml; charset=UTF-8', 'SOAPAction': '""' },
+          body: envelope,
+        })
+          .then(async (res) => {
+            const text = await res.text();
+            // createMetadata returns a SaveResult: <result><success>…</success>
+            // <errors><message>…</message></errors></result>.
+            if (res.ok && /<success>true<\/success>/.test(text)) {
+              sendResponse({ success: true });
+            } else {
+              const msg = text.match(/<message>([\s\S]*?)<\/message>/)?.[1]
+                ?? text.match(/<faultstring>([\s\S]*?)<\/faultstring>/)?.[1];
+              sendResponse({ success: false, error: msg ? xmlUnesc(msg) : sfErrorText(res.status, text) });
+            }
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'CREATE_CUSTOM_FIELD') {
+        // fullName is "Object__c.Field__c" (works for custom fields on standard
+        // objects too, e.g. "Account.My_Field__c"). NOTE: API-created fields have
+        // no FLS for anyone except admins with "Modify All Data" — the caller is
+        // expected to follow up with GRANT_FIELD_PERMISSIONS.
+        fetch(`${request.instanceUrl}/services/data/v60.0/tooling/sobjects/CustomField`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ FullName: request.fullName, Metadata: request.metadata }),
+        })
+          .then(async (res) => {
+            const text = await res.text();
+            if (res.ok) {
+              let id: string | undefined;
+              try { id = JSON.parse(text)?.id; } catch { /* ignore */ }
+              sendResponse({ success: true, id });
+            } else {
+              sendResponse({ success: false, error: sfErrorText(res.status, text) });
+            }
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'EXECUTE_ANONYMOUS') {
+        // Run anonymous Apex through the Apex SOAP API. The DebuggingHeader makes
+        // Salesforce return the full debug log inline in the response — no trace
+        // flag or ApexLog polling needed — which the caller hands straight to the
+        // Log Analyzer. Service workers have no DOMParser, so we parse with regex.
+        const esc = (v: unknown) => String(v)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        const unesc = (s: string) => s
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+
+        // Debug-level presets → per-category log levels for the DebuggingHeader.
+        const PRESETS: Record<string, Record<string, string>> = {
+          standard: { Db: 'INFO', Workflow: 'INFO', Validation: 'INFO', Callout: 'INFO', Apex_code: 'DEBUG', Apex_profiling: 'NONE', Visualforce: 'NONE', System: 'DEBUG' },
+          detailed: { Db: 'FINEST', Workflow: 'FINER', Validation: 'INFO', Callout: 'FINEST', Apex_code: 'FINEST', Apex_profiling: 'FINEST', Visualforce: 'FINER', System: 'FINE' },
+          profiling: { Db: 'FINEST', Workflow: 'NONE', Validation: 'NONE', Callout: 'NONE', Apex_code: 'FINE', Apex_profiling: 'FINEST', Visualforce: 'NONE', System: 'INFO' },
+        };
+        const cats = PRESETS[request.logLevel as string] || PRESETS.standard;
+        const catXml = Object.entries(cats)
+          .map(([c, l]) => `<apex:categories><apex:category>${c}</apex:category><apex:level>${l}</apex:level></apex:categories>`)
+          .join('');
+
+        const envelope =
+          `<?xml version="1.0" encoding="UTF-8"?>` +
+          `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:apex="http://soap.sforce.com/2006/08/apex">` +
+          `<soapenv:Header>` +
+          `<apex:SessionHeader><apex:sessionId>${esc(request.sessionId)}</apex:sessionId></apex:SessionHeader>` +
+          `<apex:DebuggingHeader>${catXml}</apex:DebuggingHeader>` +
+          `</soapenv:Header>` +
+          `<soapenv:Body><apex:executeAnonymous><apex:String>${esc(request.apexBody)}</apex:String></apex:executeAnonymous></soapenv:Body>` +
+          `</soapenv:Envelope>`;
+
+        fetch(`${request.instanceUrl}/services/Soap/s/60.0`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/xml; charset=UTF-8', 'SOAPAction': '""' },
+          body: envelope,
+        })
+          .then(async (res) => {
+            const text = await res.text();
+            const fault = text.match(/<faultstring>([\s\S]*?)<\/faultstring>/)?.[1];
+            if (fault) { sendResponse({ success: false, error: unesc(fault) }); return; }
+            // Pull a value out of a (possibly namespaced) element; xsi:nil / self-
+            // closing tags carry no body and correctly yield undefined.
+            const pick = (tag: string) => {
+              const m = text.match(new RegExp(`<(?:\\w+:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?${tag}>`));
+              return m ? m[1] : undefined;
+            };
+            const num = (tag: string) => { const v = pick(tag); const n = v == null ? NaN : Number(v); return Number.isFinite(n) ? n : undefined; };
+            sendResponse({
+              success: true,
+              compiled: pick('compiled') === 'true',
+              exceptionThrown: pick('success') === 'false',
+              compileProblem: pick('compileProblem') != null ? unesc(pick('compileProblem')!) : undefined,
+              line: num('line'),
+              column: num('column'),
+              exceptionMessage: pick('exceptionMessage') != null ? unesc(pick('exceptionMessage')!) : undefined,
+              exceptionStackTrace: pick('exceptionStackTrace') != null ? unesc(pick('exceptionStackTrace')!) : undefined,
+              debugLog: pick('debugLog') != null ? unesc(pick('debugLog')!) : undefined,
+            });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'GET_FLS_TARGETS') {
+        // FieldPermissions.ParentId must be a PermissionSet Id. Profiles are
+        // granted through their owning permission set (IsOwnedByProfile = true),
+        // so one query covers both profiles and standalone permission sets.
+        // Permission set GROUPS are excluded — FLS can't be written to them.
+        const q = `SELECT Id, Label, Name, IsOwnedByProfile, Profile.Name FROM PermissionSet WHERE Type != 'Group' ORDER BY IsOwnedByProfile DESC, Label`;
+        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(q)}`, {
+          headers: { 'Authorization': `Bearer ${request.sessionId}` },
+        })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(sfErrorText(res.status, t)); })))
+          .then((data) => sendResponse({
+            success: true,
+            data: (data.records || []).map((r: { Id: string; Label?: string; Name?: string; IsOwnedByProfile?: boolean; Profile?: { Name?: string } }) => ({
+              id: r.Id,
+              label: r.IsOwnedByProfile ? (r.Profile?.Name || r.Label) : (r.Label || r.Name),
+              isProfile: r.IsOwnedByProfile === true,
+            })),
+          }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'GRANT_FIELD_PERMISSIONS') {
+        // Bulk-create FieldPermissions rows via the composite API (25 subrequests
+        // per call). allOrNone:false so one duplicate/failed grant doesn't roll
+        // back the rest; per-grant errors are collected and reported.
+        // grants: [{ parentId, sobjectType, field, read, edit }]
+        const V = 'v60.0';
+        type FlsGrant = { parentId: string; sobjectType: string; field: string; read?: boolean; edit?: boolean };
+        const grants: FlsGrant[] = Array.isArray(request.grants) ? request.grants : [];
+        const chunks: FlsGrant[][] = [];
+        for (let i = 0; i < grants.length; i += 25) chunks.push(grants.slice(i, i + 25));
+
+        type ChunkResult = { grant: FlsGrant; ok: boolean; error?: string };
+        const runChunk = (chunk: FlsGrant[]): Promise<ChunkResult[]> =>
+          fetch(`${request.instanceUrl}/services/data/${V}/composite`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              allOrNone: false,
+              compositeRequest: chunk.map((g, i) => ({
+                method: 'POST',
+                url: `/services/data/${V}/sobjects/FieldPermissions`,
+                referenceId: `ref${i}`,
+                body: {
+                  ParentId: g.parentId,
+                  SobjectType: g.sobjectType,
+                  Field: g.field,
+                  PermissionsRead: g.read !== false,
+                  PermissionsEdit: g.edit === true,
+                },
+              })),
+            }),
+          })
+            .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(sfErrorText(res.status, t)); })))
+            .then((data) => (data.compositeResponse || []).map((r: { httpStatusCode: number; body?: { message?: string } | Array<{ message?: string }> }, i: number) => ({
+              grant: chunk[i],
+              ok: r.httpStatusCode >= 200 && r.httpStatusCode < 300,
+              error: r.httpStatusCode >= 300 ? (Array.isArray(r.body) ? r.body[0]?.message : r.body?.message) || `HTTP ${r.httpStatusCode}` : undefined,
+            })));
+
+        (async () => {
+          const results: ChunkResult[] = [];
+          for (const chunk of chunks) results.push(...await runChunk(chunk));
+          const failed = results.filter((r) => !r.ok);
+          sendResponse({ success: true, granted: results.length - failed.length, failed });
+        })().catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'GET_OBJECT_AUTOMATION') {
+        // Automation Map: everything that fires when a record of `objectApiName`
+        // is saved, gathered from Tooling + data APIs in parallel:
+        //   · Apex triggers (with before/after insert/update/delete/undelete flags)
+        //   · Record-triggered flows + processes (FlowDefinitionView — TriggerType
+        //     RecordBeforeSave/RecordAfterSave/RecordBeforeDelete, ProcessType
+        //     Workflow = Process Builder)
+        //   · Validation rules, duplicate rules, workflow rules
+        //   · Lead/Case routing: assignment, auto-response, escalation rules
+        // Individual queries fail soft (label + error) so one missing permission
+        // doesn't blank the whole map.
+        const V = 'v60.0';
+        const obj: string = request.objectApiName;
+        const headers = { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' };
+        type SfRow = Record<string, unknown>;
+        type QueryResult = { records: SfRow[]; error?: string };
+        const soql = (q: string, tooling: boolean): Promise<QueryResult> =>
+          fetch(`${request.instanceUrl}/services/data/${V}/${tooling ? 'tooling/' : ''}query/?q=${encodeURIComponent(q)}`, { headers })
+            .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(sfErrorText(res.status, t)); })))
+            .then((d) => ({ records: (d.records || []) as SfRow[] }))
+            .catch((err) => ({ records: [], error: String(err.message || err) }));
+
+        // FlowDefinitionView filters on the trigger object's DurableId.
+        const entityIdP = soql(`SELECT DurableId FROM EntityDefinition WHERE QualifiedApiName = '${obj}' LIMIT 1`, false);
+
+        Promise.all([
+          soql(`SELECT Id, Name, Status, UsageBeforeInsert, UsageAfterInsert, UsageBeforeUpdate, UsageAfterUpdate, UsageBeforeDelete, UsageAfterDelete, UsageAfterUndelete FROM ApexTrigger WHERE TableEnumOrId = '${obj}' ORDER BY Name`, true),
+          soql(`SELECT Id, ValidationName, Active, Description, ErrorMessage FROM ValidationRule WHERE EntityDefinition.QualifiedApiName = '${obj}' ORDER BY ValidationName`, true),
+          soql(`SELECT Id, MasterLabel, IsActive, DeveloperName FROM DuplicateRule WHERE SobjectType = '${obj}' ORDER BY MasterLabel`, false),
+          soql(`SELECT Id, Name FROM WorkflowRule WHERE TableEnumOrId = '${obj}' ORDER BY Name`, true),
+          entityIdP.then((e): Promise<QueryResult> | QueryResult => {
+            const durableId = e.records[0]?.DurableId as string | undefined;
+            if (!durableId) return { records: [], error: e.error };
+            return soql(`SELECT DurableId, ApiName, Label, ProcessType, TriggerType, RecordTriggerType, IsActive, ActiveVersionId, LatestVersionId FROM FlowDefinitionView WHERE TriggerObjectOrEventId = '${durableId}'`, false);
+          }),
+          // NOTE: AutoResponseRule and EscalationRule are NOT queryable sObjects
+          // (Metadata API only) — the UI renders those phases as Setup links.
+          ['Lead', 'Case'].includes(obj) ? soql(`SELECT Id, Name, Active FROM AssignmentRule WHERE SobjectType = '${obj}' ORDER BY Name`, false) : Promise.resolve<QueryResult>({ records: [] }),
+        ])
+          .then(([triggers, validations, dupRules, workflows, flows, assignment]) =>
+            sendResponse({
+              success: true,
+              data: { triggers, validations, dupRules, workflows, flows, assignment },
+            }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'GET_ALL_SECURITY') {
         // Permission sets, permission set groups, and profiles in one shot.
         const headers = { 'Authorization': `Bearer ${request.sessionId}` };
