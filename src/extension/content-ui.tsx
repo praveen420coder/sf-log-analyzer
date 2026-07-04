@@ -188,6 +188,35 @@ function saveTabConfig(cfg: TabConfig): void {
 
 loadTabConfig();
 
+// ─── Tools grid order (user-draggable) ─────────────────────────
+// Persisted list of tool ids in the order the user arranged them. Unknown /
+// newly-introduced ids are reconciled at render time, so this only needs to
+// store the ids we have seen.
+const TOOLS_ORDER_KEY = 'sf_spotlight_tools_order';
+let currentToolsOrder: string[] = [];
+
+function loadToolsOrder(): void {
+  if ((globalThis as any).chrome?.storage?.local) {
+    (globalThis as any).chrome.storage.local.get([TOOLS_ORDER_KEY], (res: any) => {
+      currentToolsOrder = Array.isArray(res?.[TOOLS_ORDER_KEY]) ? res[TOOLS_ORDER_KEY] : [];
+    });
+  } else {
+    try { const v = JSON.parse(localStorage.getItem(TOOLS_ORDER_KEY) || 'null'); currentToolsOrder = Array.isArray(v) ? v : []; }
+    catch { currentToolsOrder = []; }
+  }
+}
+
+function saveToolsOrder(order: string[]): void {
+  currentToolsOrder = order;
+  if ((globalThis as any).chrome?.storage?.local) {
+    (globalThis as any).chrome.storage.local.set({ [TOOLS_ORDER_KEY]: order });
+  } else {
+    try { localStorage.setItem(TOOLS_ORDER_KEY, JSON.stringify(order)); } catch { /* ignore */ }
+  }
+}
+
+loadToolsOrder();
+
 // Load the saved spotlight theme so the modal renders with the right appearance.
 loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; });
 // Keep the global-header toggle in sync when changed from another tab/the settings page.
@@ -2188,6 +2217,19 @@ function buildSpotlight(tabConfig: TabConfig) {
       #sf-spotlight-input::placeholder { color: ${T.textFaint}; opacity: 1; }
       #sf-log-analyzer-spotlight-container .sf-star { cursor: pointer; opacity: 0.55; transition: opacity 0.15s, transform 0.15s; padding: 4px; border-radius: 6px; }
       #sf-log-analyzer-spotlight-container .sf-star:hover { opacity: 1; transform: scale(1.15); }
+      /* Animated moving-highlight border for featured tool tiles. A masked
+         gradient ring sits on the tile edge and flows continuously. */
+      #sf-log-analyzer-spotlight-container .sf-tool-featured::after {
+        content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 2px;
+        background: linear-gradient(115deg, #2563eb, #a855f7, #ec4899, #22d3ee, #2563eb);
+        background-size: 300% 300%; animation: sfToolBorderFlow 4s linear infinite;
+        -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+        -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+      }
+      @keyframes sfToolBorderFlow { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
+      @media (prefers-reduced-motion: reduce) {
+        #sf-log-analyzer-spotlight-container .sf-tool-featured::after { animation: none; }
+      }
     `;
   }
 
@@ -4101,9 +4143,24 @@ function buildSpotlight(tabConfig: TabConfig) {
         },
       ];
 
+      // Apply the user's saved drag order: known ids first (in saved order),
+      // then any tools not yet in the saved list, in their declared order.
+      const orderIndex = new Map(currentToolsOrder.map((id, i) => [id, i]));
+      const orderedTools = tools
+        .map((t, i) => ({ t, i }))
+        .sort((a, b) => {
+          const ai = orderIndex.has(a.t.id) ? (orderIndex.get(a.t.id) as number) : Infinity;
+          const bi = orderIndex.has(b.t.id) ? (orderIndex.get(b.t.id) as number) : Infinity;
+          return ai !== bi ? ai - bi : a.i - b.i;
+        })
+        .map(({ t }) => t);
+
+      // Reordering is only offered on the full, unfiltered grid — dragging a
+      // filtered subset would give a confusing partial order.
+      const canReorder = query.length === 0;
       const filtered = query.length > 0
-        ? tools.filter(t => t.label.toLowerCase().includes(query) || t.desc.toLowerCase().includes(query))
-        : tools;
+        ? orderedTools.filter(t => t.label.toLowerCase().includes(query) || t.desc.toLowerCase().includes(query))
+        : orderedTools;
 
       if (filtered.length === 0) { showMessage('No tools match your search.'); return; }
 
@@ -4115,11 +4172,26 @@ function buildSpotlight(tabConfig: TabConfig) {
         gap: '12px', padding: '20px 28px 24px',
       });
 
+      // Persist the current visual order of the grid's tiles.
+      const commitOrder = () => {
+        const ids = Array.from(grid.children)
+          .map((el) => (el as HTMLElement).dataset.toolId)
+          .filter((id): id is string => !!id);
+        saveToolsOrder(ids);
+      };
+
+      let dragEl: HTMLElement | null = null;
+
+      // Standout tools get an animated moving-highlight border.
+      const FEATURED_TOOLS = new Set(['inspectlwc', 'automationmap', 'accessmap']);
+
       filtered.forEach((t) => {
         const isToggle = !!t.toggleKey;
         const isOn = isToggle && toolsState[t.toggleKey as keyof ToolsState];
 
         const tile = document.createElement('button');
+        tile.dataset.toolId = t.id;
+        if (FEATURED_TOOLS.has(t.id)) tile.classList.add('sf-tool-featured');
         const baseBg = isOn ? 'rgba(37,99,235,0.12)' : T.surface;
         const baseBorder = isOn ? `2px solid ${T.accent}` : `1.5px solid ${strongBorder}`;
         Object.assign(tile.style, {
@@ -4139,6 +4211,19 @@ function buildSpotlight(tabConfig: TabConfig) {
           tile.appendChild(dot);
         }
 
+        // Drag-handle grip (top-left) — signals the tile can be reordered.
+        // Faint by default, brightens when the tile is hovered.
+        let grip: HTMLElement | null = null;
+        if (canReorder) {
+          grip = document.createElement('span');
+          grip.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
+          Object.assign(grip.style, {
+            position: 'absolute', top: '8px', left: '8px', display: 'inline-flex',
+            color: T.textMuted, opacity: '0.4', transition: 'opacity 0.15s', pointerEvents: 'none',
+          });
+          tile.appendChild(grip);
+        }
+
         const ic = document.createElement('div');
         ic.textContent = t.icon;
         Object.assign(ic.style, { fontSize: '32px', lineHeight: '1' });
@@ -4150,8 +4235,50 @@ function buildSpotlight(tabConfig: TabConfig) {
         Object.assign(ds.style, { fontSize: '11px', color: isOn ? T.accent : T.textMuted, fontWeight: isOn ? '700' : '400' });
         tile.appendChild(ic); tile.appendChild(lb); tile.appendChild(ds);
 
-        tile.addEventListener('mouseover', () => { tile.style.transform = 'translateY(-2px)'; if (!isOn) tile.style.background = T.surfaceHover; });
-        tile.addEventListener('mouseout', () => { tile.style.transform = 'none'; tile.style.background = baseBg; });
+        tile.addEventListener('mouseover', () => { tile.style.transform = 'translateY(-2px)'; if (!isOn) tile.style.background = T.surfaceHover; if (grip) grip.style.opacity = '0.9'; });
+        tile.addEventListener('mouseout', () => { tile.style.transform = 'none'; tile.style.background = baseBg; if (grip) grip.style.opacity = '0.4'; });
+
+        // Drag-to-reorder (only on the unfiltered grid).
+        if (canReorder) {
+          tile.draggable = true;
+          tile.style.cursor = 'grab';
+          tile.title = 'Drag to reorder';
+          let dragged = false;
+
+          tile.addEventListener('dragstart', (e) => {
+            dragEl = tile;
+            dragged = true;
+            (e as DragEvent).dataTransfer?.setData('text/plain', t.id);
+            if ((e as DragEvent).dataTransfer) (e as DragEvent).dataTransfer!.effectAllowed = 'move';
+            // Defer so the browser captures the drag image before we dim it.
+            setTimeout(() => { tile.style.opacity = '0.4'; }, 0);
+          });
+          tile.addEventListener('dragend', () => {
+            tile.style.opacity = '1';
+            dragEl = null;
+            // dragover already reorders the DOM live; persist the final order
+            // here so a drop landing on a grid gap still sticks.
+            commitOrder();
+            // Swallow the click the browser fires after a drag ends.
+            setTimeout(() => { dragged = false; }, 0);
+          });
+          tile.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if ((e as DragEvent).dataTransfer) (e as DragEvent).dataTransfer!.dropEffect = 'move';
+            if (!dragEl || dragEl === tile) return;
+            const rect = tile.getBoundingClientRect();
+            const after = (e as DragEvent).clientY > rect.top + rect.height / 2
+              || (e as DragEvent).clientX > rect.left + rect.width / 2;
+            grid.insertBefore(dragEl, after ? tile.nextSibling : tile);
+          });
+          tile.addEventListener('drop', (e) => {
+            e.preventDefault();
+            commitOrder();
+          });
+          // Prevent the post-drag click from triggering the tool.
+          tile.addEventListener('click', (e) => { if (dragged) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+        }
+
         tile.addEventListener('click', () => {
           if (isToggle) {
             const key = t.toggleKey as keyof ToolsState;
