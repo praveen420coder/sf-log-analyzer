@@ -5,6 +5,7 @@ import { METADATA_CATALOG } from './spotlight/metadataCatalog';
 import type { MetaType } from './spotlight/metadataCatalog';
 import { initObjectExplorer } from './features/objectExplorer';
 import { COMMON_PREFIXES, isValidSalesforceId } from './lib/salesforceId';
+import { createIdLink } from './lib/idMenu';
 import { loadRecentsAndFavorites, getRecents, getFavorites, recordRecent, clearRecents, isFavorite, toggleFavorite } from './state/recents';
 import type { RecentItem } from './state/recents';
 import { STORAGE_KEY, loadSettings, persistSettings, saveSpotlightTheme } from './state/settings';
@@ -16,6 +17,7 @@ import { showWhatsNew, WHATS_NEW_VERSION_KEY } from './features/whatsNew';
 import { renderPermissionCompareInto } from './features/permissionCompare';
 import { renderApexTestsInto } from './features/apexTestRunner';
 import { renderAccessExplorerInto } from './features/accessExplorer';
+import { renderDataImportInto } from './features/dataImport';
 
 import { renderOrgLimitsExplorerInto } from './features/orgLimits';
 import { renderObjectManagerInto } from './features/objectManager';
@@ -1150,6 +1152,21 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
     accent: '#2563eb',
   };
 
+  // Id cells in results open the shared Go-to-record / View-record-data menu.
+  const exportIdMenuDeps = {
+    isDark, flashToast,
+    recordUrl: (id: string) => `${lightningOrigin()}/${id}`,
+    fetchRecord: (id: string) => new Promise<{ data?: any; error?: string }>((resolve) => {
+      getSfCredentials().then((creds: any) => {
+        if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'GET_RECORD_DETAIL', recordId: id, instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+          (resp: any) => resolve(resp?.success ? { data: resp.data } : { error: resp?.error || 'Could not load record.' }),
+        );
+      });
+    }),
+  };
+
   // Layout: fixed header + editor/controls; only the table area scrolls.
   const root = document.createElement('div');
   Object.assign(root.style, { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column' });
@@ -1318,7 +1335,12 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
       vcols.forEach((c) => {
         const td = document.createElement('td');
         const cell = exportSettings.localTime ? formatLocalTimeCell(r[c]) : r[c];
-        td.textContent = cell === undefined || cell === null ? '' : String(cell);
+        const str = cell === undefined || cell === null ? '' : String(cell);
+        if (typeof cell === 'string' && isValidSalesforceId(cell)) {
+          td.appendChild(createIdLink(cell, exportIdMenuDeps));
+        } else {
+          td.textContent = str;
+        }
         Object.assign(td.style, { padding: '6px 12px', color: C.textPrimary, border: `1px solid ${C.divider}`, verticalAlign: 'top',
           ...(wrap ? { whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: '420px' } : { whiteSpace: 'nowrap', maxWidth: '380px', overflow: 'hidden', textOverflow: 'ellipsis' }) });
         tr.appendChild(td);
@@ -3906,7 +3928,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3931,6 +3953,23 @@ function buildSpotlight(tabConfig: TabConfig) {
         }
         if (toolView === 'accessmap') {
           renderAccessExplorerInto(resultsContainer, { isDark, onBack, flashToast, runQuery: dataQuery });
+          return;
+        }
+        if (toolView === 'dataimport') {
+          const sendImport = (extra: any) => new Promise<any>((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' }); return; }
+              (globalThis as any).chrome.runtime.sendMessage({ instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...extra }, (resp: any) => resolve(resp || { success: false, error: 'No response' }));
+            });
+          });
+          renderDataImportInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            recordUrl: (id: string) => `${lightningOrigin()}/${id}`,
+            listObjects: () => new Promise((res) => getSoqlObjects((list) => res(list))),
+            describeObject: (name: string) => sendImport({ type: 'DESCRIBE_SOBJECT_IMPORT', objectApiName: name }).then((r) => (r.success ? { fields: r.data || [] } : { fields: [], error: r.error })),
+            runImport: (payload: any) => sendImport({ type: 'DATA_IMPORT', ...payload }).then((r) => (r.success ? { results: r.results } : { error: r.error })),
+            fetchRecord: (id: string, objectApiName?: string) => sendImport({ type: 'GET_RECORD_DETAIL', recordId: id, objectApiName }).then((r) => (r.success ? { data: r.data } : { error: r.error })),
+          });
           return;
         }
         if (toolView === 'shortcuts') {
@@ -4084,6 +4123,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'accessmap', icon: '🗺️', label: 'Access Explorer', desc: 'Object, field & user access map',
           run: () => { searchInput.value = ''; toolView = 'accessmap'; performSearch(); },
+        },
+        {
+          id: 'dataimport', icon: '⬆️', label: 'Data Import', desc: 'Insert / update / upsert / delete from CSV',
+          run: () => { searchInput.value = ''; toolView = 'dataimport'; performSearch(); },
         },
         {
           id: 'release', icon: '🚀', label: 'Salesforce Release', desc: 'Current release & updates',

@@ -931,6 +931,45 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'DESCRIBE_SOBJECT_IMPORT') {
+        // Rich field metadata for the import wizard (createable/updateable/externalId/idLookup).
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${request.objectApiName}/describe`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 120)}`); })))
+          .then((d) => sendResponse({
+            success: true,
+            data: (d.fields || []).map((f: any) => ({
+              name: f.name, label: f.label, type: f.type,
+              createable: f.createable === true, updateable: f.updateable === true,
+              externalId: f.externalId === true, idLookup: f.idLookup === true,
+              nillable: f.nillable === true, referenceTo: f.referenceTo || [],
+            })),
+          }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'DATA_IMPORT') {
+        // Batch DML via the REST Composite sObject Collections API (≤200 records).
+        const V = 'v60.0';
+        const base = `${request.instanceUrl}/services/data/${V}/composite/sobjects`;
+        const headers = { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json', 'Accept': 'application/json' };
+        const allOrNone = !!request.allOrNone;
+        let url = base; let method = 'POST'; let body: string | undefined;
+        const op = request.operation;
+        if (op === 'insert') { method = 'POST'; body = JSON.stringify({ allOrNone, records: request.records }); }
+        else if (op === 'update') { method = 'PATCH'; body = JSON.stringify({ allOrNone, records: request.records }); }
+        else if (op === 'upsert') { url = `${base}/${request.sobject}/${request.externalIdField}`; method = 'PATCH'; body = JSON.stringify({ allOrNone, records: request.records }); }
+        else if (op === 'delete') { url = `${base}?ids=${(request.ids || []).join(',')}&allOrNone=${allOrNone}`; method = 'DELETE'; }
+        else { sendResponse({ success: false, error: `Unknown operation: ${op}` }); return true; }
+        fetch(url, { method, headers, body })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { let m = `HTTP ${res.status}`; try { const j = JSON.parse(t); if (Array.isArray(j) && j[0]?.message) m = j[0].message; else if (j?.[0]?.errorCode) m = `${j[0].errorCode}: ${j[0].message || ''}`; } catch { m = `${m}: ${t.substring(0, 200)}`; } throw new Error(m); })))
+          .then((data) => sendResponse({ success: true, results: Array.isArray(data) ? data : [data] }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'GET_QUERY_PLAN') {
         // Query Plan / explain — shows leading operation, cardinality, cost.
         const V = 'v60.0';
