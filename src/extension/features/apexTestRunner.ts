@@ -19,11 +19,18 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: Partial<CSSSt
 }
 
 // Pull test classes + their @IsTest methods out of ApexClass SymbolTable records.
-function parseTestClasses(records: any[]): TestClass[] {
+// Returns the parsed test classes plus the Ids of records whose SymbolTable was
+// missing/empty — those can't be trusted here and need the Body fallback below.
+// (SymbolTable is computed lazily and is frequently null in freshly deployed
+// scratch orgs, which would otherwise make real test classes disappear.)
+function parseTestClasses(records: any[]): { classes: TestClass[]; unresolvedIds: string[] } {
   const out: TestClass[] = [];
+  const unresolvedIds: string[] = [];
   for (const r of records) {
     const st = r.SymbolTable;
-    if (!st) continue;
+    // A valid SymbolTable has a tableDeclaration. When it's null/empty we can't
+    // tell if this is a test class — defer to the Body-based fallback instead.
+    if (!st || !st.tableDeclaration) { unresolvedIds.push(r.Id); continue; }
     const classAnns = (st.tableDeclaration?.annotations || []).map((a: any) => (a.name || '').toLowerCase());
     const isTestClass = classAnns.includes('istest');
     const methods: string[] = [];
@@ -38,7 +45,51 @@ function parseTestClasses(records: any[]): TestClass[] {
       out.push({ id: r.Id, name: r.Name, methods: methods.sort() });
     }
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  return { classes: out, unresolvedIds };
+}
+
+// Fallback parser for when SymbolTable is unavailable: detect test classes and
+// their test methods directly from the Apex Body. Comments are stripped first to
+// avoid false positives. A class qualifies if it carries a class-level @IsTest
+// annotation or defines any test method (@IsTest method or the legacy
+// `testMethod` modifier).
+function parseTestClassFromBody(id: string, name: string, body: string): TestClass | null {
+  if (!body) return null;
+  // Strip block and line comments.
+  const src = body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+
+  // Class-level @IsTest: look at the text before the first `class` keyword.
+  const classKw = src.search(/\bclass\b/i);
+  const head = classKw >= 0 ? src.slice(0, classKw) : src;
+  const classIsTest = /@istest\b/i.test(head);
+
+  // Test methods: scan for method headers `name(params) {`, then inspect the
+  // declaration segment immediately before the name (bounded by the previous
+  // `;`, `{`, or `}`, so it holds only this method's own annotations/modifiers,
+  // not the class-level ones or a prior method's body). A method is a test if
+  // that segment carries @IsTest or the legacy `testMethod` modifier. This is
+  // resilient to modifier ordering (e.g. `static testMethod void foo()`).
+  const methods: string[] = [];
+  // Params never contain parens in Apex, so excluding ()  stops an annotation
+  // like `@IsTest(SeeAllData=true)` from swallowing the method header after it.
+  const headerRe = /([A-Za-z_]\w*)\s*\([^;{}()]*\)\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = headerRe.exec(src)) !== null) {
+    const methodName = m[1];
+    const nameStart = m.index;
+    // Walk back to the nearest statement/block boundary to isolate this decl.
+    let segStart = 0;
+    for (let i = nameStart - 1; i >= 0; i--) {
+      const ch = src[i];
+      if (ch === ';' || ch === '{' || ch === '}') { segStart = i + 1; break; }
+    }
+    const segment = src.slice(segStart, nameStart).toLowerCase();
+    const isTestMethod = /@istest\b/.test(segment) || /\btestmethod\b/.test(segment);
+    if (isTestMethod && methodName && !methods.includes(methodName)) methods.push(methodName);
+  }
+
+  if (!classIsTest && methods.length === 0) return null;
+  return { id, name, methods: methods.sort() };
 }
 
 export function renderApexTestsInto(host: HTMLElement, deps: ApexTestDeps): void {
@@ -120,15 +171,65 @@ export function renderApexTestsInto(host: HTMLElement, deps: ApexTestDeps): void
   const isAlive = () => document.body.contains(root);
 
   // ── data loading ──
+  let orgNamespace: string | null | undefined; // undefined = not yet looked up
+
+  // The org's own namespace. In a namespaced scratch/dev org, the developer's
+  // OWN Apex classes carry this namespace — so filtering on `NamespacePrefix =
+  // null` alone hides every local test class. We include null OR this namespace,
+  // which still excludes installed managed packages (other namespaces).
+  async function getOrgNamespace(): Promise<string | null> {
+    if (orgNamespace !== undefined) return orgNamespace;
+    const { records, error } = await deps.runQuery('SELECT NamespacePrefix FROM Organization LIMIT 1', false);
+    const ns: string | null = error ? null : (records?.[0]?.NamespacePrefix ?? null);
+    orgNamespace = ns;
+    return ns;
+  }
+
+  // Escape a value for a single-quoted SOQL string literal.
+  const soqlStr = (v: string) => `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+
   async function loadClasses(force = false) {
     if (loaded && !force) return;
+
+    const ns = await getOrgNamespace();
+    const nsClause = ns ? `(NamespacePrefix = null OR NamespacePrefix = ${soqlStr(ns)})` : 'NamespacePrefix = null';
     const { records, error } = await deps.runQuery(
-      "SELECT Id, Name, SymbolTable FROM ApexClass WHERE NamespacePrefix = null AND Status = 'Active' ORDER BY Name LIMIT 2000", true);
+      `SELECT Id, Name, SymbolTable FROM ApexClass WHERE ${nsClause} AND Status = 'Active' ORDER BY Name LIMIT 2000`, true);
     loaded = true;
     if (error) { loadError = error; if (view === 'run') renderRun(); return; }
     loadError = '';
-    classes = parseTestClasses(records);
+
+    const { classes: parsed, unresolvedIds } = parseTestClasses(records || []);
+    const byId = new Map<string, TestClass>(parsed.map((c) => [c.id, c]));
+
+    // Fallback: some classes came back with no usable SymbolTable (common right
+    // after a scratch-org deploy). Fetch their Body and detect tests from source
+    // so they don't silently vanish from the list.
+    if (unresolvedIds.length) {
+      const bodyClasses = await loadClassesFromBody(unresolvedIds);
+      for (const c of bodyClasses) if (!byId.has(c.id)) byId.set(c.id, c);
+    }
+
+    classes = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
     if (view === 'run') renderRun();
+  }
+
+  // Fetch Body for the given class Ids (chunked to keep SOQL under limits) and
+  // parse test classes/methods from source.
+  async function loadClassesFromBody(ids: string[]): Promise<TestClass[]> {
+    const out: TestClass[] = [];
+    const CHUNK = 150;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const inClause = ids.slice(i, i + CHUNK).map(soqlStr).join(',');
+      const { records, error } = await deps.runQuery(
+        `SELECT Id, Name, Body FROM ApexClass WHERE Id IN (${inClause})`, true);
+      if (error) continue; // best-effort; skip this chunk on failure
+      for (const r of records || []) {
+        const tc = parseTestClassFromBody(r.Id, r.Name, r.Body || '');
+        if (tc) out.push(tc);
+      }
+    }
+    return out;
   }
 
   // Pull recent test runs (and their results) that already exist in the org.

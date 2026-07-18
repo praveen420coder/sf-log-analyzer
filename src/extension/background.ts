@@ -1,5 +1,12 @@
 // background.ts - Salesforce Debug Log Chrome Extension
 
+import type { ApiLogEntry, ApiLogSnapshot, ApiKind } from './lib/apiLog';
+
+// Inlined runtime constants (kept out of a shared module so Rollup doesn't emit
+// a cross-entry chunk — content-ui/background must stay self-contained).
+const API_LOG_PORT = 'api-log';
+const emptyCounts = (): Record<ApiKind, number> => ({ query: 0, apex: 0, rest: 0, session: 0, other: 0 });
+
 interface SalesforceData {
   instanceUrl: string;
   sessionId: string | null;
@@ -16,6 +23,97 @@ const soqlAborters: Record<string, AbortController> = {};
 if (chromeAPI?.storage?.session?.setAccessLevel) {
   chromeAPI.storage.session.setAccessLevel({ 
     accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' 
+  });
+}
+
+// ─── API activity log (transparency console) ──────────────────────────────
+// Every Salesforce API call the extension makes, plus internal session/cookie
+// lookups. Streamed live to the footer console over a runtime port. Purely
+// in-memory and ephemeral: nothing is persisted, and the log is reset whenever
+// a page (re)loads (PAGE_LOADED_ON_SF), so a refresh gives a clean slate.
+const API_LOG_MAX = 500;
+let apiLog: ApiLogEntry[] = [];
+let apiCounts = emptyCounts();
+let apiTotal = 0;
+let apiSeq = 0;
+const apiPorts = new Set<any>();
+
+const apiSnapshot = (): ApiLogSnapshot => ({ entries: apiLog.slice(0, 200), counts: apiCounts, total: apiTotal });
+
+const broadcastApi = (msg: any) => {
+  for (const p of Array.from(apiPorts)) {
+    try { p.postMessage(msg); } catch { apiPorts.delete(p); }
+  }
+};
+
+const logApiCall = (e: Omit<ApiLogEntry, 'id' | 'ts'>) => {
+  const entry: ApiLogEntry = { ...e, id: ++apiSeq, ts: Date.now() };
+  apiLog.unshift(entry);
+  if (apiLog.length > API_LOG_MAX) apiLog.length = API_LOG_MAX;
+  apiCounts[entry.kind] = (apiCounts[entry.kind] || 0) + 1;
+  apiTotal++;
+  broadcastApi({ type: 'append', entry, counts: apiCounts, total: apiTotal });
+};
+
+const clearApiLog = () => {
+  apiLog = []; apiCounts = emptyCounts(); apiTotal = 0;
+  broadcastApi({ type: 'snapshot', ...apiSnapshot() });
+};
+
+// Classify a Salesforce API URL into a kind + human-friendly label.
+const SF_API_RE = /\/services\/(data|Soap|async)\b/i;
+const classifyApiCall = (url: string, method: string): { kind: ApiKind; label: string } => {
+  let u: URL | null = null;
+  try { u = new URL(url); } catch { /* ignore */ }
+  const path = u?.pathname || url;
+  const lower = path.toLowerCase();
+  if (lower.includes('/soap/')) return { kind: 'apex', label: 'Apex SOAP (execute anonymous)' };
+  if (lower.includes('runtestsasynchronous')) return { kind: 'apex', label: 'Run Apex tests' };
+  if (lower.includes('/tooling/query') || /\/query\/?$/.test(lower)) {
+    const q = u?.searchParams.get('q');
+    return { kind: 'query', label: q ? q.replace(/\s+/g, ' ').trim() : (lower.includes('/tooling/') ? 'Tooling query' : 'Query') };
+  }
+  if (lower.includes('/limits')) return { kind: 'rest', label: 'Org limits' };
+  if (lower.includes('/composite')) return { kind: 'rest', label: 'Composite request' };
+  const m = path.match(/\/services\/data\/v[\d.]+\/(.*)$/i);
+  const tail = m ? m[1] : path.replace(/^.*\/services\//, '');
+  return { kind: 'rest', label: `${method} /${tail}`.replace(/\?.*$/, '') };
+};
+
+// Wrap the SW's global fetch so every Salesforce API call is logged centrally,
+// without touching each individual request handler. Non-Salesforce fetches pass
+// through untouched and unlogged.
+if (typeof self !== 'undefined' && typeof (self as any).fetch === 'function') {
+  const originalFetch = (self as any).fetch.bind(self);
+  (self as any).fetch = (input: any, init?: any) => {
+    const url = typeof input === 'string' ? input : (input?.url || '');
+    if (!SF_API_RE.test(url)) return originalFetch(input, init);
+    const method = String(init?.method || (typeof input === 'object' && input?.method) || 'GET').toUpperCase();
+    const start = Date.now();
+    const { kind, label } = classifyApiCall(url, method);
+    return originalFetch(input, init).then(
+      (res: Response) => {
+        const len = res.headers?.get?.('content-length');
+        logApiCall({ kind, method, label, status: res.status, ok: res.ok, durationMs: Date.now() - start, bytes: len ? Number(len) : undefined });
+        return res;
+      },
+      (err: any) => {
+        logApiCall({ kind, method, label, status: 0, ok: false, durationMs: Date.now() - start, error: err?.message || 'Network error' });
+        throw err;
+      },
+    );
+  };
+}
+
+// Live console subscribers connect here; they receive a snapshot then live
+// appends. Sending 'clear' over the port wipes the session log.
+if (chromeAPI?.runtime?.onConnect) {
+  chromeAPI.runtime.onConnect.addListener((port: any) => {
+    if (port.name !== API_LOG_PORT) return;
+    apiPorts.add(port);
+    try { port.postMessage({ type: 'snapshot', ...apiSnapshot() }); } catch { /* ignore */ }
+    port.onMessage.addListener((m: any) => { if (m?.type === 'clear') clearApiLog(); });
+    port.onDisconnect.addListener(() => apiPorts.delete(port));
   });
 }
 
@@ -66,6 +164,109 @@ const getHostnameFromUrl = (url: string): string | null => {
   }
 };
 
+// Resolve Salesforce credentials from cookies for a given page URL.
+//
+// Two-step lookup (inspired by Salesforce Inspector Reloaded):
+//   1. Read the OrgID from the current page's `sid` cookie.
+//   2. Search all Salesforce domains for the matching session cookie so we
+//      resolve the true instance host (e.g. *.my.salesforce.com), not the
+//      Lightning/Visualforce host the user happens to be on.
+//
+// Returns a Promise so it can be used both by the push path (PAGE_LOADED_ON_SF)
+// and the pull/self-healing path (GET_SF_CREDENTIALS on a cache miss). Never
+// rejects — resolves to an unauthenticated SalesforceData on failure.
+const resolveSfCredentialsInner = (
+  requestUrl: string,
+  cookieStoreId?: string,
+  retryCount = 0,
+): Promise<SalesforceData> => {
+  return new Promise((resolve) => {
+    let pageUrl: URL;
+    try {
+      pageUrl = new URL(requestUrl);
+    } catch {
+      resolve({ instanceUrl: requestUrl, sessionId: null, timestamp: Date.now(), isAuthenticated: false });
+      return;
+    }
+    const currentDomain = pageUrl.hostname;
+
+    chromeAPI.cookies.get(
+      { url: requestUrl, name: 'sid', storeId: cookieStoreId },
+      (currentCookie: any) => {
+        if (chromeAPI.runtime.lastError || !currentCookie || currentDomain.endsWith('.mcas.ms')) {
+          if (retryCount < 2) {
+            setTimeout(
+              () => resolveSfCredentialsInner(requestUrl, cookieStoreId, retryCount + 1).then(resolve),
+              (retryCount + 1) * 500,
+            );
+            return;
+          }
+          resolve({ instanceUrl: pageUrl.origin, sessionId: null, timestamp: Date.now(), isAuthenticated: false });
+          return;
+        }
+
+        // Extract OrgID (first part before "!" in session ID)
+        const [orgId] = currentCookie.value.split('!');
+
+        // Search across all Salesforce domains for the matching session.
+        const orderedDomains = [
+          'salesforce.com', 'cloudforce.com', 'salesforce.mil',
+          'cloudforce.mil', 'sfcrmproducts.cn', 'force.com',
+        ];
+
+        let settled = false;
+        let domainsChecked = 0;
+
+        orderedDomains.forEach((domain) => {
+          chromeAPI.cookies.getAll(
+            { name: 'sid', domain, secure: true, storeId: cookieStoreId },
+            (cookies: any[]) => {
+              domainsChecked++;
+
+              if (!settled && cookies?.length) {
+                const sessionCookie = cookies.find((c: any) =>
+                  c.value.startsWith(orgId + '!') && c.domain !== 'help.salesforce.com'
+                );
+                if (sessionCookie) {
+                  settled = true;
+                  resolve({
+                    instanceUrl: `https://${cleanDomain(sessionCookie.domain)}`,
+                    sessionId: sessionCookie.value,
+                    timestamp: Date.now(),
+                    isAuthenticated: true,
+                  });
+                  return;
+                }
+              }
+
+              // Fallback: use the current page cookie if no cross-domain match.
+              if (domainsChecked === orderedDomains.length && !settled) {
+                settled = true;
+                resolve({
+                  instanceUrl: `https://${cleanDomain(currentCookie.domain)}`,
+                  sessionId: currentCookie.value,
+                  timestamp: Date.now(),
+                  isAuthenticated: true,
+                });
+              }
+            }
+          );
+        });
+      }
+    );
+  });
+};
+
+// Public wrapper: resolves credentials and records the lookup in the API log
+// as a 'session' entry (so cookie/session resolution shows in the console too).
+const resolveSfCredentials = (requestUrl: string, cookieStoreId?: string): Promise<SalesforceData> => {
+  const start = Date.now();
+  return resolveSfCredentialsInner(requestUrl, cookieStoreId).then((data) => {
+    logApiCall({ kind: 'session', method: 'COOKIE', label: 'Resolve Salesforce session (cookies)', status: 0, ok: !!data.isAuthenticated, durationMs: Date.now() - start });
+    return data;
+  });
+};
+
 const chromeRuntime = (globalThis as any).chrome?.runtime;
 if (chromeRuntime) {
   chromeRuntime.onMessage.addListener(
@@ -78,104 +279,65 @@ if (chromeRuntime) {
 
         const requestUrl = senderTab.url;
         const cookieStoreId = senderTab.cookieStoreId;
+        const cleanedPageHostname = cleanDomain(getHostnameFromUrl(requestUrl) || '');
 
-        // Two-step cookie lookup (inspired by Salesforce Inspector Reloaded):
-        // 1. Extract OrgID from current page cookie
-        // 2. Search all Salesforce domains for matching session
-        const fetchAndSaveCredentials = (retryCount = 0) => {
-          try {
-            const pageUrl = new URL(requestUrl);
-            const currentDomain = pageUrl.hostname;
-            const cleanedPageHostname = cleanDomain(currentDomain);
-            chromeAPI.cookies.get(
-              { url: requestUrl, name: 'sid', storeId: cookieStoreId },
-              (currentCookie: any) => {
-                if (chromeAPI.runtime.lastError || !currentCookie || currentDomain.endsWith('.mcas.ms')) {
-                  if (retryCount < 2) {
-                    setTimeout(() => fetchAndSaveCredentials(retryCount + 1), (retryCount + 1) * 500);
-                    return;
-                  }
-                  saveSessionData({
-                    instanceUrl: pageUrl.origin,
-                    sessionId: null,
-                    timestamp: Date.now(),
-                    isAuthenticated: false,
-                  }, cleanedPageHostname);
-                  return;
-                }
+        // A page (re)loaded — the activity console is ephemeral, so wipe the log
+        // for a clean slate on every refresh.
+        clearApiLog();
 
-                // Extract OrgID (first part before "!" in session ID)
-                const [orgId] = currentCookie.value.split('!');
-
-                // Search across all Salesforce domains for matching session
-                const orderedDomains = [
-                  'salesforce.com', 'cloudforce.com', 'salesforce.mil',
-                  'cloudforce.mil', 'sfcrmproducts.cn', 'force.com'
-                ];
-                
-                let foundSession = false;
-                let domainsChecked = 0;
-                
-                orderedDomains.forEach((domain) => {
-                  chromeAPI.cookies.getAll(
-                    { name: 'sid', domain, secure: true, storeId: cookieStoreId },
-                    (cookies: any[]) => {
-                      domainsChecked++;
-                      
-                      if (!foundSession && cookies?.length) {
-                        const sessionCookie = cookies.find((c: any) => 
-                          c.value.startsWith(orgId + '!') && c.domain !== 'help.salesforce.com'
-                        );
-                        
-                        if (sessionCookie && !foundSession) {
-                          foundSession = true;
-                          const instanceHostname = cleanDomain(sessionCookie.domain);
-
-                          saveSessionData({
-                            instanceUrl: `https://${instanceHostname}`,
-                            sessionId: sessionCookie.value,
-                            timestamp: Date.now(),
-                            isAuthenticated: true,
-                          }, cleanedPageHostname);
-                        }
-                      }
-                      
-                      // Fallback: use current page cookie if no match found
-                      if (domainsChecked === orderedDomains.length && !foundSession) {
-                        saveSessionData({
-                          instanceUrl: `https://${cleanDomain(currentCookie.domain)}`,
-                          sessionId: currentCookie.value,
-                          timestamp: Date.now(),
-                          isAuthenticated: true,
-                        }, cleanedPageHostname);
-                      }
-                    }
-                  );
-                });
-              }
-            );
-          } catch (error) {
-            // Error processing Salesforce page
-          }
-        };
-
-        // Start the fetch process
-        fetchAndSaveCredentials();
+        // Resolve from cookies and cache under the page hostname so consumers
+        // (GET_SF_CREDENTIALS) can read it back keyed by their active host.
+        resolveSfCredentials(requestUrl, cookieStoreId).then((data) => {
+          saveSessionData(data, cleanedPageHostname);
+        });
         return false;
       }
 
       if (request.type === 'GET_SF_CREDENTIALS') {
-        const hostname = request.hostname || getHostnameFromUrl(sender?.tab?.url || '');        
+        const hostname = request.hostname || getHostnameFromUrl(sender?.tab?.url || '');
         if (!hostname) {
           sendResponse({ success: true, data: null });
           return true;
         }
-        
-        // Look for session data for this specific hostname
+
+        // Look for cached session data for this specific hostname.
         const storageKey = `sfData_${hostname}`;
         chromeAPI.storage.session.get([storageKey], (result: any) => {
-          sendResponse({ success: true, data: result[storageKey] || null });
+          const cached: SalesforceData | null = result[storageKey] || null;
+
+          // Cache hit with a live session — return it directly.
+          if (cached?.isAuthenticated && cached.sessionId) {
+            sendResponse({ success: true, data: cached });
+            return;
+          }
+
+          // Cache miss / stale / unauthenticated → resolve on demand (pull).
+          // This self-heals the races that left the push path empty:
+          // service-worker eviction, already-open tabs on install/update,
+          // SPA navigation, or opening the panel before the cookie lookup ran.
+          const lookupUrl = sender?.tab?.url || `https://${hostname}`;
+          const cookieStoreId = sender?.tab?.cookieStoreId;
+          resolveSfCredentials(lookupUrl, cookieStoreId).then((data) => {
+            if (data.isAuthenticated && data.sessionId) {
+              saveSessionData(data, hostname);
+              sendResponse({ success: true, data });
+            } else {
+              // Return cached (may hold a usable instanceUrl) or null.
+              sendResponse({ success: true, data: cached || null });
+            }
+          });
         });
+        return true;
+      }
+
+      if (request.type === 'GET_API_LOG') {
+        sendResponse({ success: true, data: apiSnapshot() });
+        return true;
+      }
+
+      if (request.type === 'CLEAR_API_LOG') {
+        clearApiLog();
+        sendResponse({ success: true });
         return true;
       }
 
@@ -945,6 +1107,35 @@ if (chromeRuntime) {
               externalId: f.externalId === true, idLookup: f.idLookup === true,
               nillable: f.nillable === true, referenceTo: f.referenceTo || [],
             })),
+          }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
+      if (request.type === 'DESCRIBE_FOR_SAMPLE') {
+        // Rich field metadata for the Sample Data generator: everything the value
+        // engine needs to synthesize valid records (types, sizes, picklists,
+        // lookups, and which fields are actually writeable).
+        const V = 'v60.0';
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        fetch(`${request.instanceUrl}/services/data/${V}/sobjects/${request.objectApiName}/describe`, { headers })
+          .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 120)}`); })))
+          .then((d) => sendResponse({
+            success: true,
+            data: {
+              label: d.label || request.objectApiName,
+              createable: d.createable === true,
+              fields: (d.fields || []).map((f: any) => ({
+                name: f.name, label: f.label, type: f.type,
+                length: f.length || 0, precision: f.precision || 0, scale: f.scale || 0, digits: f.digits || 0,
+                createable: f.createable === true, nillable: f.nillable === true,
+                defaultedOnCreate: f.defaultedOnCreate === true,
+                calculated: f.calculated === true, autoNumber: f.autoNumber === true,
+                unique: f.unique === true, restrictedPicklist: f.restrictedPicklist === true,
+                referenceTo: f.referenceTo || [],
+                picklistValues: (f.picklistValues || []).map((p: any) => ({ value: p.value, active: p.active !== false, defaultValue: p.defaultValue === true })),
+              })),
+            },
           }))
           .catch((err) => sendResponse({ success: false, error: err.message }));
         return true;

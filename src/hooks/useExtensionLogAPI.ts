@@ -264,16 +264,26 @@ export function useExtensionLogAPI() {
     );
   }, [instanceUrl, sessionId, userInfo, checkDebugSession]);
 
-  // Check for existing debug session when userInfo is available
+  // On-demand: check the debug-session status ONCE when creds/user become
+  // available, so the badge reflects reality when the panel opens. No polling —
+  // continuous refresh only happens while the user turns on "Live" below.
   useEffect(() => {
     if (userInfo?.id && instanceUrl && sessionId) {
       checkDebugSession();
-      
-      // Periodically check debug session status (every 30 seconds)
-      const interval = setInterval(checkDebugSession, 30000);
-      return () => clearInterval(interval);
     }
   }, [userInfo, instanceUrl, sessionId, checkDebugSession]);
+
+  // User-controlled live polling. Off by default; only when the user clicks
+  // "Live" do we re-query the TraceFlag on an interval to auto-track changes.
+  const [debugLive, setDebugLive] = useState(false);
+  const toggleDebugLive = useCallback(() => setDebugLive((v) => !v), []);
+
+  useEffect(() => {
+    if (!debugLive || !userInfo?.id || !instanceUrl || !sessionId) return;
+    checkDebugSession(); // immediate refresh on enabling Live
+    const interval = setInterval(checkDebugSession, 30000);
+    return () => clearInterval(interval);
+  }, [debugLive, userInfo, instanceUrl, sessionId, checkDebugSession]);
 
   const stopDebugSession = useCallback(() => {
     const { chrome } = (globalThis as any);
@@ -342,6 +352,8 @@ export function useExtensionLogAPI() {
     isCreatingDebugSession,
     createDebugSession,
     checkDebugSession,
+    debugLive,
+    toggleDebugLive,
     stopDebugSession,
     isStoppingDebugSession,
     deleteAllLogs,

@@ -18,7 +18,9 @@ const DashboardView: React.FC<{
   onDeleteAllLogs?: () => void;
   isDeletingAllLogs?: boolean;
   onOpenDebugSessionControl?: () => void;
-}> = ({ logs, metrics, isFetching, onFetch, onExplore, instanceUrl, userInfo, debugSession, isCreatingDebugSession, onCreateDebugSession, onStopDebugSession, isStoppingDebugSession, onDeleteAllLogs, isDeletingAllLogs, onOpenDebugSessionControl }) => {
+  debugLive?: boolean;
+  onToggleDebugLive?: () => void;
+}> = ({ logs, metrics, isFetching, onFetch, onExplore, instanceUrl, userInfo, debugSession, isCreatingDebugSession, onCreateDebugSession, onStopDebugSession, isStoppingDebugSession, onDeleteAllLogs, isDeletingAllLogs, onOpenDebugSessionControl, debugLive, onToggleDebugLive }) => {
   const [timeRemaining, setTimeRemaining] = useState<string>('');
 
   // Update timer every second
@@ -126,8 +128,22 @@ const DashboardView: React.FC<{
         </button>
       )}
 
+      {onToggleDebugLive && (
+        <button
+          onClick={onToggleDebugLive}
+          disabled={!userInfo}
+          className={`flex items-center justify-center gap-2 min-w-[120px] h-14 rounded-full text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed border-2 ${
+            debugLive ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-300 bg-white text-gray-500'
+          }`}
+          title={debugLive ? 'Live: auto-refreshing debug session status every 30s. Click to stop.' : 'Off: debug session status is checked on demand only. Click to auto-refresh.'}
+        >
+          <span className={`w-2 h-2 rounded-full ${debugLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></span>
+          <span>{debugLive ? 'Live' : 'Live Off'}</span>
+        </button>
+      )}
+
       {onOpenDebugSessionControl && (
-        <button 
+        <button
           onClick={onOpenDebugSessionControl}
           disabled={!userInfo}
           className="flex items-center justify-center min-w-[200px] h-14 bg-blue-600 text-white rounded-full text-xs font-bold tracking-[0.2em] uppercase transition-all hover:scale-[1.02] active:scale-[0.98] group disabled:opacity-50 disabled:cursor-not-allowed"

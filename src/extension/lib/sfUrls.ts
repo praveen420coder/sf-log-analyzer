@@ -52,13 +52,28 @@ export function activeSfHost(): string {
   return sessionOverrideHost || cleanSfDomain(sfHostname());
 }
 
-export function getSfCredentials(): Promise<any> {
-  return new Promise((resolve) => {
-    const chromeRuntime = (globalThis as any).chrome?.runtime;
-    if (!chromeRuntime) return resolve(null);
-    chromeRuntime.sendMessage(
-      { type: 'GET_SF_CREDENTIALS', hostname: activeSfHost() },
-      (r: any) => resolve(r?.data || null),
-    );
-  });
+// Resolve the live session for the active host. The background self-heals a
+// cache miss by reading cookies on demand, but that first read can still race
+// a just-loaded page, so we retry a few times with a short backoff before
+// giving up. A result is "usable" once it carries a sessionId.
+export function getSfCredentials(maxAttempts = 4): Promise<any> {
+  const chromeRuntime = (globalThis as any).chrome?.runtime;
+  if (!chromeRuntime) return Promise.resolve(null);
+
+  const attempt = (n: number): Promise<any> =>
+    new Promise((resolve) => {
+      chromeRuntime.sendMessage(
+        { type: 'GET_SF_CREDENTIALS', hostname: activeSfHost() },
+        (r: any) => {
+          const data = r?.data || null;
+          if (data?.sessionId || n >= maxAttempts) {
+            resolve(data);
+            return;
+          }
+          setTimeout(() => attempt(n + 1).then(resolve), n * 400);
+        },
+      );
+    });
+
+  return attempt(1);
 }

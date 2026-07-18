@@ -25,6 +25,8 @@ import type { SfObjectRef, FlsTarget } from './features/objectManager';
 import { renderAutomationMapInto } from './features/automationMap';
 import type { AutomationData } from './features/automationMap';
 import { renderExecuteAnonymousInto } from './features/executeAnonymous';
+import { renderSampleDataInto } from './features/sampleDataGenerator';
+import { ensureMagicStyles } from './features/magicFill';
 
 import { enterInspectMode, isInspecting, exitInspectMode } from './features/componentInspector';
 
@@ -33,6 +35,7 @@ import { renderCustomShortcutsInto, resolveShortcutUrl } from './features/custom
 
 import { loadVisitedOrgs, recordVisitedOrg } from './state/sessions';
 import { renderSessionSwitcherInto } from './features/sessionSwitcher';
+import { renderApiConsoleInto, type ApiConsoleHandle } from './features/apiConsole';
 import type { BundleInfo } from './features/componentInspector/detect';
 import type { LwcFile } from './features/componentInspector/viewer';
 
@@ -40,6 +43,10 @@ import type { LwcFile } from './features/componentInspector/viewer';
 
 // Tracks the spotlight theme so buildSpotlight() (module-level) can read it.
 let currentSpotlightTheme: 'light' | 'dark' = 'light';
+
+// Live API-activity console handle; destroyed and rebuilt with the spotlight so
+// its background port doesn't leak across reopens.
+let apiConsoleHandle: ApiConsoleHandle | null = null;
 // Whether the Object Explorer icon is shown in the Salesforce global header.
 let objectExplorerEnabled = true;
 // When a theme toggle rebuilds the modal, reopen the Settings panel afterwards.
@@ -849,6 +856,61 @@ function renderOrgDetailsInto(host: HTMLElement, isDark: boolean, onBack: () => 
       }
     );
   });
+}
+
+// ─── Magic Fill settings (enable + what to fill) ─────────────────────────────
+
+function renderMagicFillSettingsInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
+  host.innerHTML = '';
+  const C = {
+    text: isDark ? '#f1f5f9' : '#1f2937',
+    muted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
+    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
+  };
+  host.appendChild(toolBackHeader(isDark, '✨  Magic Fill', onBack));
+  const body = document.createElement('div');
+  Object.assign(body.style, { padding: '6px 28px 24px' });
+  host.appendChild(body);
+
+  const intro = document.createElement('div');
+  intro.textContent = 'Adds an “Auto Fill” button to record create/edit modals that fills the fields with sample data. Choose what it fills below.';
+  Object.assign(intro.style, { fontSize: '13px', color: C.muted, lineHeight: '1.5', marginBottom: '10px' });
+  body.appendChild(intro);
+
+  const subRows: { key: keyof ToolsState; cb: HTMLInputElement }[] = [];
+  const syncSubState = () => {
+    subRows.forEach(({ cb }) => {
+      const on = !!toolsState.magicFill;
+      cb.disabled = !on;
+      (cb.parentElement as HTMLElement).style.opacity = on ? '1' : '0.5';
+    });
+  };
+
+  const row = (key: keyof ToolsState, title: string, sub: string, sublevel = false) => {
+    const label = document.createElement('label');
+    Object.assign(label.style, { display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 0', paddingLeft: sublevel ? '24px' : '0', borderBottom: `1px solid ${C.divider}`, cursor: 'pointer' });
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!toolsState[key];
+    Object.assign(cb.style, { width: '18px', height: '18px', cursor: 'pointer', flexShrink: '0' });
+    cb.addEventListener('change', () => {
+      (toolsState as any)[key] = cb.checked;
+      saveToolsState();
+      applyToolToggle(key);
+      if (key === 'magicFill') syncSubState();
+    });
+    const txt = document.createElement('div');
+    txt.innerHTML = `<div style="font-size:14px;font-weight:700;color:${C.text}">${title}</div><div style="font-size:12px;color:${C.muted};margin-top:2px">${sub}</div>`;
+    label.appendChild(cb); label.appendChild(txt);
+    body.appendChild(label);
+    if (sublevel) subRows.push({ key, cb });
+    return cb;
+  };
+
+  row('magicFill', 'Enable Magic Fill', 'Show the Auto Fill button in record modals');
+  row('magicFillNormal', 'Fill normal fields', 'Text, number, email, phone, URL, checkbox, date', true);
+  row('magicFillPicklist', 'Fill picklist values', 'Pick a valid option for picklist fields', true);
+  syncSubState();
 }
 
 // ─── Salesforce release info (shown in-extension) ────────────────────────────
@@ -2031,6 +2093,10 @@ function showSpotlightSearch() {
 }
 
 function buildSpotlight(tabConfig: TabConfig) {
+  // Tear down a prior API console (and its background port) before rebuilding.
+  apiConsoleHandle?.destroy();
+  apiConsoleHandle = null;
+
   // ─── Theme tokens (light / dark) ───────────────────────────
   const isDark = currentSpotlightTheme === 'dark';
   const fullPage = SPOTLIGHT_PAGE; // rendered as a standalone tab, not an overlay
@@ -2482,9 +2548,15 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   hintsBar.appendChild(hintsRight);
 
+  // Live API-activity console — transparency panel above the footer.
+  const apiConsoleWrap = document.createElement('div');
+  apiConsoleWrap.style.flexShrink = '0';
+  apiConsoleHandle = renderApiConsoleInto(apiConsoleWrap, { isDark });
+
   modal.appendChild(tabsContainer);   // tabs on top
   modal.appendChild(inputContainer);
   modal.appendChild(resultsContainer);
+  modal.appendChild(apiConsoleWrap);  // console sits between results and footer
   modal.appendChild(hintsBar);
 
   modalContent.appendChild(backdrop);
@@ -3928,7 +4000,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -3970,6 +4042,29 @@ function buildSpotlight(tabConfig: TabConfig) {
             runImport: (payload: any) => sendImport({ type: 'DATA_IMPORT', ...payload }).then((r) => (r.success ? { results: r.results } : { error: r.error })),
             fetchRecord: (id: string, objectApiName?: string) => sendImport({ type: 'GET_RECORD_DETAIL', recordId: id, objectApiName }).then((r) => (r.success ? { data: r.data } : { error: r.error })),
           });
+          return;
+        }
+        if (toolView === 'sampledata') {
+          const sendBg = (extra: any) => new Promise<any>((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' }); return; }
+              (globalThis as any).chrome.runtime.sendMessage({ instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...extra }, (resp: any) => resolve(resp || { success: false, error: 'No response' }));
+            });
+          });
+          renderSampleDataInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            recordUrl: (id: string) => `${lightningOrigin()}/${id}`,
+            listObjects: () => new Promise((res) => getSoqlObjects((list) => res(list))),
+            describeObject: (name: string) => sendBg({ type: 'DESCRIBE_FOR_SAMPLE', objectApiName: name }).then((r) => (r.success ? r.data : { error: r.error })),
+            orgInfo: () => sendBg({ type: 'GET_ORG_INFO' }).then((r) => (r.success && r.data ? { isSandbox: r.data.IsSandbox === true, orgType: r.data.OrganizationType || '', trialExpiration: r.data.TrialExpirationDate || null, name: r.data.Name } : null)),
+            queryRecords: dataQuery,
+            insertRecords: (_obj: string, records: any[]) => sendBg({ type: 'DATA_IMPORT', operation: 'insert', allOrNone: false, records }).then((r) => (r.success ? { results: r.results } : { error: r.error })),
+            deleteRecords: (ids: string[]) => sendBg({ type: 'DATA_IMPORT', operation: 'delete', ids, allOrNone: false }).then((r) => (r.success ? { results: r.results } : { error: r.error })),
+          });
+          return;
+        }
+        if (toolView === 'magicfill') {
+          renderMagicFillSettingsInto(resultsContainer, isDark, onBack);
           return;
         }
         if (toolView === 'shortcuts') {
@@ -4129,6 +4224,10 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => { searchInput.value = ''; toolView = 'dataimport'; performSearch(); },
         },
         {
+          id: 'sampledata', icon: '🧪', label: 'Sample Data', desc: 'Generate test records (sandbox & scratch only)',
+          run: () => { searchInput.value = ''; toolView = 'sampledata'; performSearch(); },
+        },
+        {
           id: 'release', icon: '🚀', label: 'Salesforce Release', desc: 'Current release & updates',
           run: () => { searchInput.value = ''; toolView = 'release'; performSearch(); },
         },
@@ -4176,6 +4275,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           },
         },
         { id: 'fieldapi', icon: '🏷️', label: 'Show Field API Names', desc: 'On record pages', toggleKey: 'showFieldApi' },
+        { id: 'magicfill', icon: '✨', label: 'Magic Fill', desc: 'Auto-fill new-record modals', run: () => { searchInput.value = ''; toolView = 'magicfill'; performSearch(); } },
         {
           id: 'whatsnew', icon: '✨', label: "What's New", desc: 'See the latest features',
           run: () => {
@@ -4277,6 +4377,9 @@ function buildSpotlight(tabConfig: TabConfig) {
         ds.textContent = isToggle ? (isOn ? 'On' : t.desc) : t.desc;
         Object.assign(ds.style, { fontSize: '11px', color: isOn ? T.accent : T.textMuted, fontWeight: isOn ? '700' : '400' });
         tile.appendChild(ic); tile.appendChild(lb); tile.appendChild(ds);
+
+        // Magic Fill gets the animated gradient border to stand out.
+        if (t.id === 'magicfill') { ensureMagicStyles(); tile.classList.add('sfsl-magic-tile'); tile.style.border = 'none'; }
 
         tile.addEventListener('mouseover', () => { tile.style.transform = 'translateY(-2px)'; if (!isOn) tile.style.background = T.surfaceHover; if (grip) grip.style.opacity = '0.9'; });
         tile.addEventListener('mouseout', () => { tile.style.transform = 'none'; tile.style.background = baseBg; if (grip) grip.style.opacity = '0.4'; });

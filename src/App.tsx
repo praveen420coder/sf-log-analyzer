@@ -21,6 +21,7 @@ export default function App() {
     logs, isFetching, userInfo, fetchLogs ,instanceUrl, sessionId, currentHostname,
     debugSession, isCreatingDebugSession, createDebugSession,
     stopDebugSession, isStoppingDebugSession,
+    debugLive, toggleDebugLive,
     deleteAllLogs, isDeletingAllLogs
   } = useExtensionLogAPI();
 
@@ -182,6 +183,8 @@ export default function App() {
                 onDeleteAllLogs={deleteAllLogs}
                 isDeletingAllLogs={isDeletingAllLogs}
                 onOpenDebugSessionControl={() => setIsDebugSessionControlOpen(true)}
+                debugLive={debugLive}
+                onToggleDebugLive={toggleDebugLive}
               />
             ) : view === 'settings' ? (
               <SettingsView

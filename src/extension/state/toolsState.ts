@@ -2,9 +2,18 @@
 // and the page tweaks that apply them. The `toolsState` object is exported by
 // reference; callers flip its boolean properties then call the apply helpers.
 
-export interface ToolsState { showFieldApi: boolean; hideDevBar: boolean; hideLoginAd: boolean; }
+import { setMagicFillEnabled, setMagicFillOptions } from '../features/magicFill';
+
+export interface ToolsState {
+  showFieldApi: boolean; hideDevBar: boolean; hideLoginAd: boolean;
+  magicFill: boolean; magicFillNormal: boolean; magicFillPicklist: boolean;
+}
 const TOOLS_STATE_KEY = 'sf_spotlight_tools_state';
-export const toolsState: ToolsState = { showFieldApi: false, hideDevBar: false, hideLoginAd: false };
+// magicFill defaults OFF; the two sub-options default on (used once enabled).
+export const toolsState: ToolsState = {
+  showFieldApi: false, hideDevBar: false, hideLoginAd: false,
+  magicFill: false, magicFillNormal: true, magicFillPicklist: true,
+};
 
 export function loadToolsState(cb?: () => void): void {
   if ((globalThis as any).chrome?.storage?.local) {
@@ -114,13 +123,20 @@ export function applyShowFieldApi(on: boolean): void {
   }
 }
 
+function applyMagicFill(): void {
+  setMagicFillOptions({ normal: toolsState.magicFillNormal, picklist: toolsState.magicFillPicklist });
+  setMagicFillEnabled(toolsState.magicFill);
+}
+
 export function applyToolToggle(key: keyof ToolsState): void {
   if (key === 'hideDevBar') applyHideDevBar(toolsState.hideDevBar);
   else if (key === 'hideLoginAd') applyHideLoginAd(toolsState.hideLoginAd);
   else if (key === 'showFieldApi') applyShowFieldApi(toolsState.showFieldApi);
+  else if (key === 'magicFill' || key === 'magicFillNormal' || key === 'magicFillPicklist') applyMagicFill();
 }
 export function applyAllToolToggles(): void {
   applyHideDevBar(toolsState.hideDevBar);
   applyHideLoginAd(toolsState.hideLoginAd);
   applyShowFieldApi(toolsState.showFieldApi);
+  applyMagicFill();
 }
