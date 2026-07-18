@@ -5,14 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/svg+xml" href="Spotlite-Icon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="Spotlite-Icon-32.png">
-    <title>SF Spotlight — Visualize & Debug Salesforce Apex Logs</title>
+    <title>SF Spotlight — Salesforce Developer Toolkit for Chrome (Apex Log Analyzer, Test Data & More)</title>
 
     <!-- SEO Meta Tags -->
-    <meta name="description" content="A powerful Chrome extension for Salesforce developers. Visualize Apex debug logs, track governor limits, run performance insights, manage debug sessions, and navigate Setup with Spotlight search — all without leaving Salesforce.">
+    <meta name="description" content="A free Chrome extension for Salesforce developers. Turn Apex debug logs into a visual flame chart, generate realistic test data, auto-fill record forms, inspect Lightning components, track governor limits, and jump anywhere in Setup with Spotlight search. Runs 100% locally using your existing session — open source (MIT).">
+    <meta name="keywords" content="Salesforce, Apex debug log analyzer, Salesforce chrome extension, Salesforce test data generator, Salesforce developer tools, Lightning component inspector, SOQL, governor limits">
     <meta name="google-site-verification" content="jfI4i9wFAgnqKfiCIjDuIHzJEMtcaGH0z7zEyvCAmEo" />
     <meta name="google-site-verification" content="cfRxhZvGBgPty9I_hY7Cod661yrFkGb5JGKnjVO0TEA" />
-    <meta property="og:title" content="SF Spotlight — Visualize & Debug Salesforce Apex Logs">
-    <meta property="og:description" content="Transform chaotic Apex debug logs into structured, actionable insights right inside your browser.">
+    <meta property="og:title" content="SF Spotlight — The Salesforce Developer Toolkit for Chrome">
+    <meta property="og:description" content="Debug Apex logs visually, generate test data, auto-fill forms, inspect components and navigate Setup — all inside your org. Free, local and open source.">
     <meta property="og:type" content="website">
 
     <!-- Fonts -->
@@ -150,12 +151,12 @@
                 </div>
 
                 <h1 class="text-5xl md:text-7xl font-extrabold tracking-tight mb-8 leading-tight">
-                    Everything you do in Salesforce — <br />
-                    <span class="bg-gradient-to-r from-brand-400 via-blue-500 to-indigo-500 gradient-text animate-gradient-x">one keystroke away.</span>
+                    The Salesforce dev tools <br />
+                    <span class="bg-gradient-to-r from-brand-400 via-blue-500 to-indigo-500 gradient-text animate-gradient-x">you wish were built in.</span>
                 </h1>
 
                 <p class="text-xl md:text-2xl text-gray-400 mb-8 max-w-3xl mx-auto font-light leading-relaxed">
-                    SF Spotlight lives inside your org and removes the busywork: jump anywhere in Setup, inspect and edit any record, run SOQL, browse every metadata type, and turn raw Apex logs into a visual flame chart, call tree and insights — all from one keyboard-driven panel, with no extra login.
+                    Turn raw Apex debug logs into a visual flame chart, call tree and instant insights — then handle the rest of your day without leaving the page: generate test data, auto-fill records, inspect components and jump anywhere in Setup. One keyboard-driven panel. No extra login.
                 </p>
 
                 <!-- Capability pills -->
@@ -171,18 +172,22 @@
 
                 <div class="flex flex-col sm:flex-row gap-4 justify-center items-center">
                     <a href="https://chromewebstore.google.com/detail/sf-log-analyzer/pimcahebopafaacgibleicnlffadcnoj" target="_blank" class="w-full sm:w-auto px-8 py-4 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-bold text-lg transition-all transform hover:-translate-y-1 hover:shadow-[0_10px_30px_-10px_rgba(14,165,233,0.6)] flex items-center justify-center gap-2">
-                        <i class="fa-brands fa-chrome"></i> Add to Chrome
+                        <i class="fa-brands fa-chrome"></i> Add to Chrome — Free
                     </a>
                     <a href="docs.html" class="w-full sm:w-auto px-8 py-4 glass-panel hover:bg-dark-surface/80 text-white rounded-lg font-semibold text-lg transition-all flex items-center justify-center gap-2 border border-dark-border hover:border-gray-500">
                         <i class="fa-solid fa-book"></i> Read the Docs
                     </a>
                 </div>
 
-                <!-- Stat strip -->
-                <div class="mt-12 flex flex-wrap justify-center gap-x-10 gap-y-4 text-sm text-gray-400">
-                    <span><i class="fa-solid fa-bolt text-brand-400 mr-2"></i>Auto-detects your session</span>
-                    <span><i class="fa-solid fa-shield-halved text-brand-400 mr-2"></i>Runs 100% in your browser</span>
-                    <span><i class="fa-brands fa-osi text-brand-400 mr-2"></i>Open source · MIT</span>
+                <!-- Trust block -->
+                <div class="mt-12 max-w-2xl mx-auto">
+                    <p class="text-sm text-gray-400 mb-4">Uses your existing Salesforce session locally — no login, no server, and nothing ever leaves your browser. Open source, so you can read exactly what it does.</p>
+                    <div class="flex flex-wrap justify-center gap-x-8 gap-y-3 text-sm text-gray-300">
+                        <span><i class="fa-solid fa-shield-halved text-brand-400 mr-2"></i>100% in your browser</span>
+                        <span><i class="fa-solid fa-server text-brand-400 mr-2"></i>No backend, no data sent</span>
+                        <span><i class="fa-solid fa-bolt text-brand-400 mr-2"></i>Auto-detects your session</span>
+                        <span><a href="https://github.com/praveen420coder/sf-log-analyzer" target="_blank" class="hover:text-white transition-colors"><i class="fa-brands fa-github text-brand-400 mr-2"></i>Open source · MIT</a></span>
+                    </div>
                 </div>
 
                 <!-- Mockup -->
@@ -381,6 +386,34 @@
                     <a href="docs.html#settings" class="inline-flex items-center gap-2 mt-4 text-brand-400 hover:text-brand-300 text-xs font-semibold">Learn more <i class="fa-solid fa-arrow-right text-[10px]"></i></a>
                 </div>
 
+            </div>
+        </div>
+    </section>
+
+    <!-- Why it's different -->
+    <section class="py-24 relative border-b border-dark-border">
+        <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-12 reveal">
+                <h2 class="text-sm font-bold text-brand-500 tracking-wide uppercase mb-2">Why SF Spotlight</h2>
+                <h3 class="text-3xl md:text-4xl font-bold text-white mb-4">Already have a Salesforce extension?</h3>
+                <p class="text-lg text-gray-400 max-w-2xl mx-auto">Most tools help you query data and jump around Setup. SF Spotlight does that too — and adds the parts they leave out.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-6">
+                <div class="glass-panel p-7 rounded-xl border border-dark-border reveal">
+                    <div class="w-11 h-11 bg-purple-500/10 rounded-lg flex items-center justify-center text-purple-400 text-xl mb-4"><i class="fa-solid fa-fire"></i></div>
+                    <h4 class="text-lg font-bold text-white mb-2">Debug logs, visualized</h4>
+                    <p class="text-gray-400 text-sm leading-relaxed">A built-in flame chart, call tree, insights and governor-limit tracking — no copy-pasting logs into a separate analyzer.</p>
+                </div>
+                <div class="glass-panel p-7 rounded-xl border border-dark-border reveal">
+                    <div class="w-11 h-11 bg-emerald-500/10 rounded-lg flex items-center justify-center text-emerald-400 text-xl mb-4"><i class="fa-solid fa-flask"></i></div>
+                    <h4 class="text-lg font-bold text-white mb-2">Test data on demand</h4>
+                    <p class="text-gray-400 text-sm leading-relaxed">Generate realistic, schema-aware records for any object — or one-click fill any create form — instead of typing dummy data by hand.</p>
+                </div>
+                <div class="glass-panel p-7 rounded-xl border border-dark-border reveal">
+                    <div class="w-11 h-11 bg-brand-500/10 rounded-lg flex items-center justify-center text-brand-400 text-xl mb-4"><i class="fa-solid fa-layer-group"></i></div>
+                    <h4 class="text-lg font-bold text-white mb-2">One panel, no tab-hopping</h4>
+                    <p class="text-gray-400 text-sm leading-relaxed">Inspect Lightning components, map an object's automation, run anonymous Apex and browse metadata — all from the same place.</p>
+                </div>
             </div>
         </div>
     </section>
