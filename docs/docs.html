@@ -88,6 +88,9 @@
                         <a href="#limits" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Governor Limits</a>
                         <a href="#filtering" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Filtering & Search</a>
                         <a href="#debug-sessions" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Debug Sessions</a>
+                        <a href="#sample-data" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Sample Data Generator</a>
+                        <a href="#magic-fill" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Magic Fill</a>
+                        <a href="#api-console" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">API Activity Console</a>
                         <a href="#settings" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Settings</a>
                         <a href="#shortcuts" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Keyboard Shortcuts</a>
                         <p class="text-xs font-bold uppercase tracking-wider text-gray-500 mt-5 mb-2 px-3">Reference</p>
@@ -112,10 +115,17 @@
                 <section id="whatsnew" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
-                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.8.0</span>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.9.0</span>
                     </div>
                     <h3>What's New</h3>
-                    <p>Meet the <strong>Component Inspector</strong> — see every Lightning Web Component on the page, read its source, and edit &amp; deploy your own components without leaving Salesforce.</p>
+                    <p>Faster test-data workflows and more transparency: generate realistic sample records for any object, auto-fill new-record modals in one click, and watch every API call the extension makes in real time.</p>
+                    <h4>v1.9.0 — Sample data, Magic Fill &amp; the API console</h4>
+                    <ul>
+                        <li><strong>Sample Data Generator</strong> — pick any object and a record count, and the tool reads the schema and creates realistic, type-correct records (respecting field length, precision/scale, picklist values and required lookups), previews them (editable before insert), and inserts via the Composite API with a one-click undo. Sandbox &amp; scratch orgs only — a confirmation is required before inserting anywhere else.</li>
+                        <li><strong>Magic Fill</strong> — adds an <strong>Auto Fill</strong> button to Lightning new-record modals that fills the fields for you (text, number, email, phone, url, checkbox, date, address and picklists), with an Undo. Toggle it and choose what it fills from Tools → Magic Fill; off by default.</li>
+                        <li><strong>API Activity console</strong> — a live, collapsible footer console showing every Salesforce API call the extension makes — queries (with the SOQL), Apex runs, REST calls and session lookups — plus per-type counts for the session. Fully transparent and ephemeral (cleared on refresh).</li>
+                        <li><strong>Lighter debug-session checks</strong> — the debug-session status is now checked on demand instead of polling every 30 seconds; flip on the <strong>Live</strong> toggle only when you want it to auto-refresh.</li>
+                    </ul>
                     <h4>v1.8.0 — Component Inspector</h4>
                     <ul>
                         <li><strong>One-key reveal</strong> — press <code>Alt+Z</code> (<code>Option+Z</code> on Mac) to outline every custom LWC on the page with its name.</li>
@@ -394,6 +404,56 @@
                     </ul>
                     <h4>Managing active sessions</h4>
                     <p>The Active tab lists running trace flags with the traced user, debug level and expiration, so you can review and stop sessions you no longer need. Sessions can also be stopped directly from the dashboard.</p>
+                    <h4>On-demand status &amp; Live</h4>
+                    <p>The debug-session indicator is checked on demand — when the panel opens and after you start or stop a session — rather than polling continuously. When you want it to keep itself in sync (for example, to watch a session auto-expire), turn on the <strong>Live</strong> toggle and it refreshes on an interval until you turn it off. The countdown itself always ticks locally, with no network calls.</p>
+                </section>
+
+                <!-- Sample Data Generator -->
+                <section id="sample-data" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 mb-3"><i class="fa-solid fa-flask"></i></div>
+                    <h3>Sample Data Generator</h3>
+                    <p>Create realistic test records for any object in seconds. Open <strong>Sample Data</strong> from the Tools drawer, pick an object and how many records you want, and the tool reads the object's schema and synthesizes type-correct values for you.</p>
+                    <h4>Smart, schema-aware values</h4>
+                    <ul>
+                        <li>Fills the right shape per field — text, email, phone, url, numbers (respecting length, precision and scale), dates, checkboxes, and a valid <strong>picklist</strong> value.</li>
+                        <li>Fills <strong>required</strong> fields by default; optional fields are a checkbox away.</li>
+                        <li>Resolves required <strong>lookups</strong> to real parent records, and tells you if a required parent doesn't exist yet.</li>
+                        <li>Skips read-only fields (formula, roll-up, auto-number) automatically.</li>
+                    </ul>
+                    <h4>Preview, insert &amp; undo</h4>
+                    <ul>
+                        <li>Preview the generated record and <strong>edit any value</strong> before inserting — optionally applying an edit to every row.</li>
+                        <li>Insert up to 200 records at once via the Composite API, with per-record results (failures usually point to a validation rule or trigger).</li>
+                        <li>One-click <strong>Delete these records</strong> undo removes everything you just inserted.</li>
+                    </ul>
+                    <p class="text-sm text-gray-500">Intended for <strong>sandbox &amp; scratch orgs</strong>. On any other org you'll be asked to confirm before records are inserted.</p>
+                </section>
+
+                <!-- Magic Fill -->
+                <section id="magic-fill" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+                    <h3>Magic Fill</h3>
+                    <p>When you open a create or edit record modal in Lightning, Magic Fill adds an <strong>Auto Fill</strong> button next to Save that fills the visible fields with sample data — so you can test a form without typing a thing. Fill first, then hit <strong>Undo</strong> if you want to clear it.</p>
+                    <h4>What it fills</h4>
+                    <ul>
+                        <li>Text, number, email, phone, url, checkbox and date fields, plus the compound <strong>Address</strong> block (street, city, state, postal code, country).</li>
+                        <li><strong>Picklists</strong> — picks a valid option, honoring record-type-specific values on the layout.</li>
+                        <li>Required fields are filled first, so a required picklist never blocks Save.</li>
+                    </ul>
+                    <h4>Turn it on &amp; choose what it fills</h4>
+                    <p>Magic Fill is <strong>off by default</strong>. Open <strong>Tools → Magic Fill</strong> to enable it and choose whether to fill normal fields, picklist values, or both. Values are generated from the object's schema, exactly like the Sample Data Generator.</p>
+                </section>
+
+                <!-- API Activity Console -->
+                <section id="api-console" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-sky-500/15 flex items-center justify-center text-sky-400 mb-3"><i class="fa-solid fa-bolt"></i></div>
+                    <h3>API Activity Console</h3>
+                    <p>For full transparency, a collapsible console sits in the panel footer showing — live — every Salesforce API call the extension makes on your behalf as you use it.</p>
+                    <ul>
+                        <li>Each entry shows the call type, a label (the actual SOQL for queries), HTTP status and how long it took.</li>
+                        <li>Per-type counts for the session: queries, Apex, REST and session lookups.</li>
+                        <li>Nothing is stored — the log is kept in memory only and clears when the page refreshes.</li>
+                    </ul>
                 </section>
 
                 <!-- Settings -->
@@ -496,7 +556,7 @@
     <footer class="bg-dark-bg border-t border-dark-border py-8">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center gap-3 text-sm text-gray-500">
             <div class="flex items-center gap-2"><i class="fa-solid fa-bolt text-brand-500"></i><span class="font-bold text-gray-300">SF Spotlight</span></div>
-            <div>By <a href="https://github.com/praveen420coder" target="_blank" class="text-brand-400 hover:underline">praveen420coder</a> · MIT License</div>
+            <div>By <a href="https://github.com/praveen420coder" target="_blank" class="text-brand-400 hover:underline">Praveen Kumar</a> · MIT License</div>
         </div>
     </footer>
 
