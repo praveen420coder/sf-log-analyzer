@@ -6,6 +6,7 @@
 // This is an independent, modern-UI reimplementation.
 
 import { createIdLink } from '../lib/idMenu';
+import { getTheme } from '../lib/theme';
 
 export interface ImportField { name: string; label: string; type: string; createable: boolean; updateable: boolean; externalId: boolean; idLookup: boolean; }
 export interface DataImportDeps {
@@ -53,14 +54,7 @@ function parseDelimited(text: string): string[][] {
 
 export function renderDataImportInto(host: HTMLElement, deps: DataImportDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff', panel: isDark ? '#111c30' : '#ffffff',
-    side: isDark ? '#0c1424' : '#f8fafc', headerBg: isDark ? '#16223b' : '#eef2f7',
-    text: isDark ? '#e2e8f0' : '#1f2937', muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.5)' : 'rgba(31,41,55,0.4)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)', divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.07)',
-    accent: '#3b82f6', ok: '#22c55e', fail: '#ef4444', zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-  };
+  const C = getTheme(isDark);
   const inp = (extra?: Partial<CSSStyleDeclaration>) => ({ padding: '8px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.panel, color: C.text, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box', ...extra } as Partial<CSSStyleDeclaration>);
   const btn = (bg: string, fg: string) => ({ background: bg, color: fg, border: bg === 'transparent' ? `1px solid ${C.border}` : 'none', borderRadius: '8px', padding: '7px 14px', cursor: 'pointer', fontSize: '12.5px', fontWeight: '700', fontFamily: 'inherit' } as Partial<CSSStyleDeclaration>);
 

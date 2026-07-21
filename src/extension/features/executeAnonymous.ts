@@ -1,3 +1,4 @@
+import { getTheme } from '../lib/theme';
 // Execute Anonymous Apex — write Apex, run it against the current org, and drop
 // straight into the Log Analyzer with the captured debug log.
 //
@@ -49,20 +50,7 @@ System.debug('Signed in as ' + UserInfo.getName());
 
 export function renderExecuteAnonymousInto(host: HTMLElement, deps: ExecuteAnonymousDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#ffffff',
-    subtle: isDark ? '#0c1322' : '#f8fafc',
-    headerBg: isDark ? '#16223b' : '#eef2f7',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.5)' : 'rgba(31,41,55,0.4)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.07)',
-    accent: '#3b82f6',
-    pass: '#22c55e',
-    fail: '#ef4444',
-  };
+  const C = getTheme(isDark);
 
   // Persisted across the analyzer round-trip so hitting "back" restores state.
   let code = SAMPLE;

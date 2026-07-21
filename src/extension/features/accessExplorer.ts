@@ -1,3 +1,4 @@
+import { getTheme } from '../lib/theme';
 // Access Explorer — a reverse view of permissions:
 //  • Object Access: which profiles/permission sets can C/R/E/D/V/M an object
 //  • Field Access:  who can Read/Edit a given field
@@ -32,20 +33,7 @@ const parentLabel = (p: any): { label: string; type: string } => {
 
 export function renderAccessExplorerInto(host: HTMLElement, deps: AccessDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#ffffff',
-    headerBg: isDark ? '#16223b' : '#eef2f7',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.5)' : 'rgba(31,41,55,0.4)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.07)',
-    accent: '#3b82f6',
-    grant: isDark ? '#4ade80' : '#16a34a',
-    hover: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
-    zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const root = el('div', { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text });

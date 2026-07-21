@@ -5,6 +5,7 @@
 // production orgs (getIsSandbox === false).
 
 import type { DetectedComponent } from './detect';
+import { getTheme } from '../../lib/theme';
 
 export interface LwcFile { id?: string; filePath: string; format: string; source: string }
 
@@ -33,16 +34,7 @@ const basename = (p: string) => p.split('/').pop() || p;
 
 export function openSourceViewer(component: DetectedComponent, deps: ViewerDeps): ViewerController {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    accent: '#3b82f6',
-    danger: '#ef4444',
-    ok: '#16a34a',
-    code: isDark ? '#0b1220' : '#ffffff',
-  };
+  const C = getTheme(isDark);
   const canEdit = component.editable && !!deps.saveSource;
 
   const panel = el('div', {

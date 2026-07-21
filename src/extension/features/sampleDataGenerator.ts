@@ -5,6 +5,8 @@
 // Backend-agnostic via injected deps (describe / query / insert / delete), so
 // the feature has no direct chrome dependency.
 
+import { getTheme } from '../lib/theme';
+
 export interface SampleField {
   name: string; label: string; type: string;
   length: number; precision: number; scale: number; digits: number;
@@ -178,21 +180,7 @@ export function generateFieldValue(f: SampleField, i: number, ctx: GenCtx): any 
 
 export function renderSampleDataInto(host: HTMLElement, deps: SampleDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#ffffff',
-    subtle: isDark ? '#0c1322' : '#f8fafc',
-    headerBg: isDark ? '#16223b' : '#eef2f7',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.5)' : 'rgba(31,41,55,0.4)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.07)',
-    accent: '#3b82f6',
-    ok: '#16a34a',
-    warn: '#f59e0b',
-    danger: '#ef4444',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const root = el('div', { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: '0', background: C.bg, color: C.text });

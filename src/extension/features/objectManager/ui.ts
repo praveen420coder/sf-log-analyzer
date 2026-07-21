@@ -2,28 +2,14 @@
 // factories so objectForm.ts and fieldWizard.ts stay declarative. Follows the
 // same inline-style, no-framework approach as the other Tools-drawer apps.
 
-export interface Palette {
-  bg: string; panel: string; text: string; muted: string; faint: string;
-  border: string; divider: string; accent: string; accentSoft: string;
-  danger: string; success: string; zebra: string; inputBg: string;
-}
+import { getTheme, type Theme } from '../../lib/theme';
+
+// Palette is a subset of the shared Theme; delegate so Object Manager (and
+// Automation Map, which reuses this) pick up the shared design layer + SLDS skin.
+export type Palette = Theme;
 
 export function palette(isDark: boolean): Palette {
-  return {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#f8fafc',
-    text: isDark ? '#f1f5f9' : '#1f2937',
-    muted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    faint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.06)',
-    accent: '#3b82f6',
-    accentSoft: isDark ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.08)',
-    danger: '#ef4444',
-    success: '#16a34a',
-    zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-    inputBg: isDark ? '#0b1220' : '#ffffff',
-  };
+  return getTheme(isDark);
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: Partial<CSSStyleDeclaration>, text?: string): HTMLElementTagNameMap[K] {

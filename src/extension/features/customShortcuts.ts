@@ -4,6 +4,7 @@
 
 import { getCustomShortcuts, addCustomShortcut, updateCustomShortcut, deleteCustomShortcut, normalizeUrl, type CustomShortcut } from '../state/customShortcuts';
 import { sfProtocol, sfHostname } from '../lib/sfUrls';
+import { getTheme } from '../lib/theme';
 
 export interface CustomShortcutsDeps {
   isDark: boolean;
@@ -27,18 +28,7 @@ export function resolveShortcutUrl(url: string): string {
 
 export function renderCustomShortcutsInto(host: HTMLElement, deps: CustomShortcutsDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#f8fafc',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.06)',
-    accent: '#3b82f6',
-    danger: '#ef4444',
-    zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const root = el('div', { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text });

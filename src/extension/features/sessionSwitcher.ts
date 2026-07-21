@@ -5,6 +5,7 @@
 
 import { getVisitedOrgs, removeVisitedOrg } from '../state/sessions';
 import { getSessionOverrideHost, setSessionOverrideHost, activeSfHost, cleanSfDomain, sfHostname, getSfCredentials } from '../lib/sfUrls';
+import { getTheme } from '../lib/theme';
 
 export interface SessionSwitcherDeps {
   isDark: boolean;
@@ -34,15 +35,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: Partial<CSSSt
 
 export function renderSessionSwitcherInto(host: HTMLElement, deps: SessionSwitcherDeps): SessionSwitcherControl {
   const isDark = deps.isDark;
-  const C = {
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    border: isDark ? 'rgba(148,163,184,0.30)' : 'rgba(0,0,0,0.14)',
-    panel: isDark ? '#0e1626' : '#ffffff',
-    hover: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
-    accent: '#3b82f6',
-    chipBg: isDark ? 'rgba(59,130,246,0.14)' : 'rgba(59,130,246,0.10)',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const pill = el('button', {

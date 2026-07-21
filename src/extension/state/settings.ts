@@ -7,6 +7,8 @@ export interface ExtensionSettings {
   verticalPosition: number;
   spotlightTheme: 'light' | 'dark';
   showObjectExplorer: boolean;
+  uiSkin: 'default' | 'slds';
+  minimalView: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -16,6 +18,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   verticalPosition: 50,
   spotlightTheme: 'light',
   showObjectExplorer: true,
+  uiSkin: 'default',
+  minimalView: false,
 };
 
 export const STORAGE_KEY = 'sf_log_analyzer_settings';

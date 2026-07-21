@@ -1,6 +1,8 @@
 // Apex Test Runner — pick test classes/methods, run them, watch results live,
 // and view code coverage. Backend-agnostic via injected runQuery / runTests.
 
+import { getTheme } from '../lib/theme';
+
 export interface ApexTestDeps {
   isDark: boolean;
   orgLabel?: string;
@@ -94,22 +96,7 @@ function parseTestClassFromBody(id: string, name: string, body: string): TestCla
 
 export function renderApexTestsInto(host: HTMLElement, deps: ApexTestDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#ffffff',
-    subtle: isDark ? '#0c1322' : '#f8fafc',
-    headerBg: isDark ? '#16223b' : '#eef2f7',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.5)' : 'rgba(31,41,55,0.4)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.07)',
-    accent: '#3b82f6',
-    pass: '#22c55e',
-    fail: '#ef4444',
-    hover: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
-    zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const root = el('div', { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text });

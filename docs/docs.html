@@ -73,7 +73,11 @@
                         <a href="#install" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Installation</a>
                         <a href="#getting-started" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Getting Started</a>
                         <p class="text-xs font-bold uppercase tracking-wider text-gray-500 mt-5 mb-2 px-3">Features</p>
+                        <a href="#home" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Home Dashboard</a>
                         <a href="#spotlight" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Spotlight Search</a>
+                        <a href="#minimal" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Minimal / Universal Search</a>
+                        <a href="#right-click" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Right-click Menu</a>
+                        <a href="#where-used-tool" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Where Used</a>
                         <a href="#custom-shortcuts" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Custom Shortcuts</a>
                         <a href="#record-id" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Open records by ID</a>
                         <a href="#record-viewer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Record viewer & edit</a>
@@ -115,10 +119,19 @@
                 <section id="whatsnew" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
-                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.9.0</span>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.10.0</span>
                     </div>
                     <h3>What's New</h3>
-                    <p>Faster test-data workflows and more transparency: generate realistic sample records for any object, auto-fill new-record modals in one click, and watch every API call the extension makes in real time.</p>
+                    <p>A friendlier front door and faster ways in: a Home dashboard, a dependency finder, a strip-only universal search, a right-click menu for every feature, and an optional Salesforce-native look.</p>
+                    <h4>v1.10.0 — Home, universal search &amp; right-click access</h4>
+                    <ul>
+                        <li><strong>Home tab</strong> — a dashboard front door: org identity and environment, at-a-glance API &amp; storage health, debug-session status, quick actions, and your recent items.</li>
+                        <li><strong>Where Used</strong> — a dependency finder. Enter a field (<code>Object.Field</code>), Apex class, flow or LWC and see everything that references it, grouped by type, via the Dependency API.</li>
+                        <li><strong>Minimal view (universal search)</strong> — an optional strip-only mode: one search box across Setup, objects, flows, users, custom shortcuts and your own tools, with results only as you type. Enable it in Settings.</li>
+                        <li><strong>Right-click menu</strong> — open any tab or tool straight from the extension's context menu, plus a "View record detail" item on record pages.</li>
+                        <li><strong>SLDS UI style</strong> — an optional skin that matches the Salesforce Lightning Design System, toggled in Settings.</li>
+                        <li><strong>Quicker open</strong> — a new <code>⌘/Alt+Space</code> shortcut, an inline (Inspector-style) autocomplete in Data Export, and a quick-actions launcher on the Setup tab.</li>
+                    </ul>
                     <h4>v1.9.0 — Sample data, Magic Fill &amp; the API console</h4>
                     <ul>
                         <li><strong>Sample Data Generator</strong> — pick any object and a record count, and the tool reads the schema and creates realistic, type-correct records (respecting field length, precision/scale, picklist values and required lookups), previews them (editable before insert), and inserts via the Composite API with a one-click undo. Sandbox &amp; scratch orgs only — a confirmation is required before inserting anywhere else.</li>
@@ -184,6 +197,19 @@
                     <p>If you don't see any logs, make sure a debug trace is active — you can start one directly from the <a href="#debug-sessions" class="text-brand-400 hover:underline">Debug Session Control</a>.</p>
                 </section>
 
+                <!-- Home Dashboard -->
+                <section id="home" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-gauge"></i></div>
+                    <h3>Home Dashboard</h3>
+                    <p>The Home tab is the panel's front door — a quick read on the org you're in and one-click routes into everything else.</p>
+                    <ul>
+                        <li><strong>Org identity</strong> — name, instance and a Sandbox / Scratch / Production badge, plus the logged-in user.</li>
+                        <li><strong>Health at a glance</strong> — gauges for API requests, data &amp; file storage and async Apex, colour-coded as you approach the limit.</li>
+                        <li><strong>Debug status</strong> — whether a trace is active and how long is left.</li>
+                        <li><strong>Quick actions &amp; recents</strong> — jump to Fetch Logs, Sample Data, Run Apex, Org Limits, and your recently opened records and tools.</li>
+                    </ul>
+                </section>
+
                 <!-- Spotlight -->
                 <section id="spotlight" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
@@ -200,6 +226,31 @@
                         <li>Use <code>↑</code> / <code>↓</code> to move through results and <code>Enter</code> to open the highlighted one.</li>
                         <li>Press <code>Esc</code> or click the backdrop to dismiss.</li>
                     </ul>
+                </section>
+
+                <!-- Minimal / Universal Search -->
+                <section id="minimal" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-magnifying-glass-plus"></i></div>
+                    <h3>Minimal / Universal Search</h3>
+                    <p>Prefer a keystroke and a single box? Turn on <strong>Minimal view</strong> in Settings and the panel becomes just a search strip — no tabs, nothing preloaded. Results appear only as you type.</p>
+                    <h4>One box, everything</h4>
+                    <p>A single query searches across <strong>Setup</strong>, <strong>objects</strong>, <strong>flows</strong>, <strong>users</strong>, your <strong>custom shortcuts</strong> and the extension's own <strong>tools</strong> — grouped by type. User results include the same Login / Incognito / detail actions as the Users tab, and pasting a record Id still surfaces the open-record options.</p>
+                    <h4>Getting back to the full view</h4>
+                    <p>A settings gear stays in the strip so you can toggle minimal view off at any time, and opening the panel in a new tab always shows the full tabbed experience.</p>
+                </section>
+
+                <!-- Right-click Menu -->
+                <section id="right-click" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-arrow-pointer"></i></div>
+                    <h3>Right-click Menu</h3>
+                    <p>Every tab and tool is one right-click away. Right-click the extension icon (or a Salesforce page) to open Spotlight straight to a tab or, under the <strong>Tools</strong> submenu, any tool. On a record page you also get a <strong>View record detail</strong> item that opens the field viewer for the current record.</p>
+                </section>
+
+                <!-- Where Used -->
+                <section id="where-used-tool" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-diagram-project"></i></div>
+                    <h3>Where Used</h3>
+                    <p>Before you change or delete something, find out what depends on it. Open <strong>Where Used</strong> from the Tools drawer, enter a custom field as <code>Object.Field</code>, or the API name of an Apex class, flow or LWC (or paste its record Id), and see everything that references it — grouped by type (Apex, flows, validation rules, layouts, and more) — using Salesforce's Dependency API.</p>
                 </section>
 
                 <!-- Custom Shortcuts -->
@@ -465,6 +516,10 @@
                         <li><strong>Panel position</strong> — dock the panel on the left or right side of the screen.</li>
                         <li><strong>Panel opacity</strong> — slide from transparent to opaque (10%–100%) so you can keep an eye on the page behind it.</li>
                         <li><strong>Panel width</strong> — adjust how much room the analyzer takes up.</li>
+                        <li><strong>Light / Dark theme</strong> — switch the Spotlight appearance.</li>
+                        <li><strong>UI style</strong> — keep the default look or switch on an <strong>SLDS</strong> skin that matches the Salesforce Lightning Design System.</li>
+                        <li><strong>Minimal view</strong> — collapse the panel to a single universal-search strip (see <a href="#minimal" class="text-brand-400 hover:underline">Minimal / Universal Search</a>).</li>
+                        <li><strong>Manage tabs</strong> — reorder, show/hide, and pick the default tab.</li>
                         <li><strong>Reset</strong> — restore all preferences to their defaults in one click.</li>
                     </ul>
                     <p>Your preferences are saved and persist across sessions.</p>
@@ -483,6 +538,7 @@
                             </tr></thead>
                             <tbody class="divide-y divide-dark-border">
                                 <tr><td class="py-3 px-5 text-gray-300">Open Spotlight Search</td><td class="py-3 px-5 font-mono text-brand-400">Alt + T</td><td class="py-3 px-5 font-mono text-brand-400">Option + T</td></tr>
+                                <tr><td class="py-3 px-5 text-gray-300">Open Spotlight Search (alt.)</td><td class="py-3 px-5 font-mono text-brand-400">Alt + Space</td><td class="py-3 px-5 font-mono text-brand-400">⌘ + Space</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open Log Analyzer Panel</td><td class="py-3 px-5 font-mono text-brand-400">Alt + S</td><td class="py-3 px-5 font-mono text-brand-400">Option + S</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open Record Detail panel</td><td class="py-3 px-5 font-mono text-brand-400">Alt + D</td><td class="py-3 px-5 font-mono text-brand-400">Option + D</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Toggle Component Inspector</td><td class="py-3 px-5 font-mono text-brand-400">Alt + Z</td><td class="py-3 px-5 font-mono text-brand-400">Option + Z</td></tr>

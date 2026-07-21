@@ -1,3 +1,4 @@
+import { getTheme } from '../lib/theme';
 // Org Limits: a full, searchable view of every limit the Salesforce
 // /limits REST endpoint returns (Max / Remaining per limit). The Tools drawer
 // already ships curated subsets (API Usage, Storage Insights); this surfaces
@@ -94,18 +95,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: Partial<CSSSt
 
 export function renderOrgLimitsExplorerInto(host: HTMLElement, deps: OrgLimitsDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#ffffff',
-    text: isDark ? '#f1f5f9' : '#1f2937',
-    muted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    faint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.06)',
-    track: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.1)',
-    accent: '#3b82f6',
-    zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const root = el('div', { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text });

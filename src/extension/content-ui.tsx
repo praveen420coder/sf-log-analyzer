@@ -27,6 +27,9 @@ import type { AutomationData } from './features/automationMap';
 import { renderExecuteAnonymousInto } from './features/executeAnonymous';
 import { renderSampleDataInto } from './features/sampleDataGenerator';
 import { ensureMagicStyles } from './features/magicFill';
+import { renderHomeInto } from './features/homeTab';
+import { renderWhereUsedInto } from './features/whereUsed';
+import { getTheme, setUiMode } from './lib/theme';
 
 import { enterInspectMode, isInspecting, exitInspectMode } from './features/componentInspector';
 
@@ -43,6 +46,12 @@ import type { LwcFile } from './features/componentInspector/viewer';
 
 // Tracks the spotlight theme so buildSpotlight() (module-level) can read it.
 let currentSpotlightTheme: 'light' | 'dark' = 'light';
+// Optional SLDS UI skin; applied to the shared theme via setUiMode.
+let currentUiSkin: 'default' | 'slds' = 'default';
+// Minimal (universal-search) view: just a search strip, results on type only.
+let currentMinimalView = false;
+// Set by the right-click context menu to open Spotlight at a specific tab/tool.
+let pendingSpotlightTarget: string | null = null;
 
 // Live API-activity console handle; destroyed and rebuilt with the spotlight so
 // its background port doesn't leak across reopens.
@@ -129,6 +138,7 @@ function applySettingsToIframe(
 interface SpotlightTab { id: string; label: string; placeholder: string; icon: string; }
 
 const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
+  { id: 'home', label: 'Home', placeholder: '', icon: '🏠' },
   { id: 'tools', label: 'Tools', placeholder: 'Search tools & actions...', icon: '🛠️' },
   { id: 'setup', label: 'Setup', placeholder: 'Search Salesforce Setup...', icon: '🏠' },
   { id: 'users', label: 'Users', placeholder: 'Search Users...', icon: '👤' },
@@ -167,6 +177,8 @@ function normalizeTabConfig(raw: any): TabConfig {
       if (HIDDEN_BY_DEFAULT.includes(id) && !cfg.hidden.includes(id)) cfg.hidden.push(id);
     }
   });
+  // Keep Home first in the tab order, even for users upgrading from a saved config.
+  if (cfg.order.includes('home')) cfg.order = ['home', ...cfg.order.filter(id => id !== 'home')];
   const firstVisible = cfg.order.find(id => !cfg.hidden.includes(id)) || 'setup';
   if (!known.includes(cfg.defaultTab) || cfg.hidden.includes(cfg.defaultTab)) cfg.defaultTab = firstVisible;
   return cfg;
@@ -227,7 +239,7 @@ function saveToolsOrder(order: string[]): void {
 loadToolsOrder();
 
 // Load the saved spotlight theme so the modal renders with the right appearance.
-loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; });
+loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; currentUiSkin = s.uiSkin || 'default'; setUiMode(currentUiSkin); currentMinimalView = s.minimalView === true; });
 // Keep the global-header toggle in sync when changed from another tab/the settings page.
 try {
   (globalThis as any).chrome?.storage?.onChanged?.addListener((changes: any, area: string) => {
@@ -800,13 +812,7 @@ function toolBackHeader(isDark: boolean, title: string, onBack: () => void): HTM
 
 function renderOrgDetailsInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
   host.innerHTML = '';
-  const C = {
-    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
-    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
-    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
-    accent: '#2563eb',
-  };
+  const C = getTheme(isDark);
   host.appendChild(toolBackHeader(isDark, '🏢  Org Details', onBack));
   const body = document.createElement('div');
   Object.assign(body.style, { padding: '4px 28px 20px' });
@@ -862,11 +868,7 @@ function renderOrgDetailsInto(host: HTMLElement, isDark: boolean, onBack: () => 
 
 function renderMagicFillSettingsInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
   host.innerHTML = '';
-  const C = {
-    text: isDark ? '#f1f5f9' : '#1f2937',
-    muted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
-  };
+  const C = getTheme(isDark);
   host.appendChild(toolBackHeader(isDark, '✨  Magic Fill', onBack));
   const body = document.createElement('div');
   Object.assign(body.style, { padding: '6px 28px 24px' });
@@ -917,14 +919,7 @@ function renderMagicFillSettingsInto(host: HTMLElement, isDark: boolean, onBack:
 
 function renderReleaseInfoInto(host: HTMLElement, isDark: boolean, onBack: () => void): void {
   host.innerHTML = '';
-  const C = {
-    divider: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.08)',
-    surface: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
-    hover: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)',
-    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
-    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    accent: '#2563eb',
-  };
+  const C = getTheme(isDark);
   host.appendChild(toolBackHeader(isDark, '🚀  Salesforce Release', onBack));
   const body = document.createElement('div');
   Object.assign(body.style, { padding: '8px 28px 20px' });
@@ -989,12 +984,7 @@ function renderReleaseInfoInto(host: HTMLElement, isDark: boolean, onBack: () =>
 
 function renderOrgLimitsInto(host: HTMLElement, isDark: boolean, onBack: () => void, opts: { title: string; fields: { key: string; label: string; storage?: boolean }[] }): void {
   host.innerHTML = '';
-  const C = {
-    track: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(31,41,55,0.1)',
-    textPrimary: isDark ? '#f1f5f9' : '#1f2937',
-    textMuted: isDark ? 'rgba(203,213,225,0.7)' : 'rgba(31,41,55,0.6)',
-    textFaint: isDark ? 'rgba(148,163,184,0.6)' : 'rgba(31,41,55,0.45)',
-  };
+  const C = getTheme(isDark);
   host.appendChild(toolBackHeader(isDark, opts.title, onBack));
   const body = document.createElement('div');
   Object.assign(body.style, { padding: '8px 28px 20px' });
@@ -1273,9 +1263,9 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
 
   const suggBox = document.createElement('div');
   Object.assign(suggBox.style, {
-    position: 'absolute', left: '0', top: '100%', marginTop: '2px', width: '100%', maxHeight: '240px', overflowY: 'auto',
-    background: C.menuBg, border: `1px solid ${C.border}`, borderRadius: '10px', boxShadow: '0 14px 36px rgba(0,0,0,0.3)',
-    zIndex: '40', display: 'none', padding: '4px',
+    position: 'absolute', left: '0', top: '0', maxHeight: '220px', overflowY: 'auto',
+    background: C.menuBg, border: `1px solid ${C.border}`, borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.28)',
+    zIndex: '40', display: 'none', padding: '3px', minWidth: '200px', maxWidth: '340px', width: 'auto',
   });
   editorWrap.appendChild(suggBox);
   top.appendChild(editorWrap);
@@ -1701,9 +1691,15 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
     suggRows = [];
     suggItems.forEach((it, i) => {
       const row = document.createElement('div');
-      Object.assign(row.style, { padding: '7px 10px', borderRadius: '7px', cursor: 'pointer', background: i === selIdx ? C.hover : 'transparent' });
+      Object.assign(row.style, { padding: '5px 8px', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', background: i === selIdx ? C.hover : 'transparent' });
       const tag = it.kind === 'func' ? 'ƒ' : it.kind === 'object' ? '▦' : '◇';
-      row.innerHTML = `<span style="color:${C.textFaint};font-size:11px;margin-right:6px">${tag}</span><span style="font-family:Fira Code,monospace;font-size:13px;font-weight:600;color:${C.textPrimary}">${it.label}</span> <span style="font-size:11px;color:${C.textFaint}">${it.sub}</span>`;
+      // Bold the part of the label that matches what's typed (like Inspector).
+      const w = suggCtx?.word || '';
+      const mi = w ? it.label.toLowerCase().indexOf(w.toLowerCase()) : -1;
+      const lblHtml = mi >= 0
+        ? `${it.label.slice(0, mi)}<strong style="color:${C.accent}">${it.label.slice(mi, mi + w.length)}</strong>${it.label.slice(mi + w.length)}`
+        : it.label;
+      row.innerHTML = `<span style="color:${C.textFaint};font-size:11px;margin-right:6px">${tag}</span><span style="font-family:Fira Code,monospace;font-size:12.5px;font-weight:600;color:${C.textPrimary}">${lblHtml}</span> <span style="font-size:11px;color:${C.textFaint}">${it.sub}</span>`;
       // mousedown (not click) + preventDefault keeps the textarea focused so the insert lands.
       row.addEventListener('mousedown', (ev) => { ev.preventDefault(); selIdx = i; insertSugg(); });
       row.addEventListener('mouseover', () => { selIdx = i; highlight(); });
@@ -1712,9 +1708,34 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
     });
   };
   const hideSugg = () => { suggBox.style.display = 'none'; suggItems = []; suggCtx = null; };
+  // Pixel position of a caret index inside the textarea (mirror-div technique),
+  // so the popup anchors right under the word being typed instead of full-width.
+  const caretCoords = (pos: number): { left: number; top: number } => {
+    const div = document.createElement('div');
+    const s = getComputedStyle(ta);
+    ['boxSizing', 'width', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textIndent', 'wordSpacing'].forEach((p) => { (div.style as any)[p] = (s as any)[p]; });
+    Object.assign(div.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre-wrap', wordWrap: 'break-word', top: '0', left: '0' });
+    div.textContent = ta.value.slice(0, pos);
+    const marker = document.createElement('span');
+    marker.textContent = ta.value.slice(pos) || '.';
+    div.appendChild(marker);
+    editorWrap.appendChild(div);
+    const left = marker.offsetLeft, top = marker.offsetTop;
+    editorWrap.removeChild(div);
+    return { left, top };
+  };
+  const positionSugg = () => {
+    if (!suggCtx) return;
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+    const { left, top } = caretCoords(suggCtx.wordStart);
+    const wrapW = editorWrap.clientWidth;
+    const boxW = Math.min(suggBox.offsetWidth || 220, 340);
+    suggBox.style.left = `${Math.max(0, Math.min(left, wrapW - boxW - 4))}px`;
+    suggBox.style.top = `${top + lh - ta.scrollTop + 2}px`;
+  };
   const showSugg = (items: Sugg[], ctx: { word: string; wordStart: number; clause: string }) => {
     if (items.length === 0) { hideSugg(); return; }
-    suggItems = items; suggCtx = ctx; selIdx = 0; suggBox.style.display = 'block'; paintSugg();
+    suggItems = items; suggCtx = ctx; selIdx = 0; suggBox.style.display = 'block'; paintSugg(); positionSugg();
   };
   const insertSugg = () => {
     const it = suggItems[selIdx]; if (!it || !suggCtx) return;
@@ -1771,6 +1792,7 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
 
   ta.addEventListener('input', updateSugg);
   ta.addEventListener('click', updateSugg);
+  ta.addEventListener('scroll', () => { if (suggBox.style.display === 'block') positionSugg(); });
   ta.addEventListener('blur', () => setTimeout(hideSugg, 150));
   ta.addEventListener('keydown', (e) => {
     const open = suggBox.style.display === 'block' && suggItems.length > 0;
@@ -2100,6 +2122,9 @@ function buildSpotlight(tabConfig: TabConfig) {
   // ─── Theme tokens (light / dark) ───────────────────────────
   const isDark = currentSpotlightTheme === 'dark';
   const fullPage = SPOTLIGHT_PAGE; // rendered as a standalone tab, not an overlay
+  // Minimal universal-search view: just a search strip (overlay only), results on type.
+  // A pending context-menu target forces the full view so its tabs/tools are reachable.
+  const minimal = currentMinimalView && !fullPage && !pendingSpotlightTarget;
   const T = {
     backdrop: isDark ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.2)',
     modalBg: isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.15)',
@@ -2146,6 +2171,8 @@ function buildSpotlight(tabConfig: TabConfig) {
   modalContent.style.display = 'flex';
   modalContent.style.alignItems = fullPage ? 'stretch' : 'center';
   modalContent.style.justifyContent = fullPage ? 'stretch' : 'center';
+  // Minimal view: sit the strip higher up rather than dead-centre.
+  if (minimal) { modalContent.style.alignItems = 'flex-start'; modalContent.style.paddingTop = '12vh'; modalContent.style.boxSizing = 'border-box'; }
   modalContent.style.zIndex = '2147483648';
   modalContent.style.pointerEvents = 'none';
 
@@ -2239,18 +2266,32 @@ function buildSpotlight(tabConfig: TabConfig) {
   openTabBtn.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${T.iconStroke}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>`;
   openTabBtn.addEventListener('mouseover', () => { openTabBtn.style.backgroundColor = T.closeHover; });
   openTabBtn.addEventListener('mouseout', () => { openTabBtn.style.backgroundColor = 'transparent'; });
-  openTabBtn.addEventListener('click', () => {
+  const openSpotlightInNewTab = () => {
     const cr = (globalThis as any).chrome?.runtime;
     const host = cleanSfDomain(sfHostname());
     const url = cr?.getURL ? `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(host)}` : '';
     if (url) cr.sendMessage({ type: 'OPEN_TAB', url });
     hideSpotlightSearch();
-  });
+  };
+  openTabBtn.addEventListener('click', openSpotlightInNewTab);
   if (fullPage) openTabBtn.style.display = 'none';
 
   inputContainer.appendChild(searchSvg);
   inputContainer.appendChild(searchInput);
   inputContainer.appendChild(openTabBtn);
+  // Minimal view hides the tabs/gear, so keep a settings gear in the strip (next
+  // to the open-in-tab button) so the user can always reach Settings.
+  if (minimal) {
+    const mGear = document.createElement('button');
+    mGear.title = 'Settings';
+    mGear.textContent = '⚙';
+    Object.assign(mGear.style, { marginLeft: '6px', padding: '8px', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '8px', fontSize: '20px', lineHeight: '1', color: T.iconStroke });
+    mGear.addEventListener('mouseover', () => { mGear.style.backgroundColor = T.closeHover; });
+    mGear.addEventListener('mouseout', () => { mGear.style.backgroundColor = 'transparent'; });
+    // The results area is collapsed until you type, so reveal it to show Settings.
+    mGear.addEventListener('click', () => { resultsContainer.style.display = ''; renderSettingsPanel(); });
+    inputContainer.appendChild(mGear);
+  }
   inputContainer.appendChild(closeBtn);
 
   // Tabs (rendered dynamically from config)
@@ -2551,13 +2592,13 @@ function buildSpotlight(tabConfig: TabConfig) {
   // Live API-activity console — transparency panel above the footer.
   const apiConsoleWrap = document.createElement('div');
   apiConsoleWrap.style.flexShrink = '0';
-  apiConsoleHandle = renderApiConsoleInto(apiConsoleWrap, { isDark });
+  if (!minimal) apiConsoleHandle = renderApiConsoleInto(apiConsoleWrap, { isDark });
 
-  modal.appendChild(tabsContainer);   // tabs on top
+  // Minimal view = search strip only: no tabs, no console, no footer, no tips.
+  if (!minimal) modal.appendChild(tabsContainer);   // tabs on top
   modal.appendChild(inputContainer);
   modal.appendChild(resultsContainer);
-  modal.appendChild(apiConsoleWrap);  // console sits between results and footer
-  modal.appendChild(hintsBar);
+  if (!minimal) { modal.appendChild(apiConsoleWrap); modal.appendChild(hintsBar); }
 
   modalContent.appendChild(backdrop);
   modalContent.appendChild(modal);
@@ -2968,9 +3009,39 @@ function buildSpotlight(tabConfig: TabConfig) {
     const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
     const wrap = document.createElement('div');
     wrap.style.padding = '8px 20px 20px';
+
+    // Jump straight to a Tools-drawer app.
+    const openToolView = (id: string) => { activateTab('tools').then(() => { toolView = id; performSearch(); }); };
+
+    const qaHeading = document.createElement('div');
+    qaHeading.textContent = 'Quick actions';
+    Object.assign(qaHeading.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em', color: T.textFaint, padding: '4px 12px 8px' });
+    wrap.appendChild(qaHeading);
+    const quick = [
+      { icon: '🏠', title: 'Home dashboard', desc: 'Org health, debug status, quick actions and recents.', onClick: () => activateTab('home') },
+      { icon: '📤', title: 'Export data', desc: 'Run SOQL and export the results as CSV.', onClick: () => openToolView('export') },
+      { icon: '🧪', title: 'Generate sample data', desc: 'Create realistic test records for any object.', onClick: () => openToolView('sampledata') },
+      { icon: '🔎', title: 'Where is this used?', desc: 'Find everything that references a field, class or flow.', onClick: () => openToolView('whereused') },
+      { icon: '🛠️', title: 'Browse all tools', desc: 'Object Manager, Automation Map, Org Limits, and more.', onClick: () => activateTab('tools') },
+    ];
+    // Compact icon tiles (wrap into rows) instead of a tall list.
+    const qaGrid = document.createElement('div');
+    Object.assign(qaGrid.style, { display: 'flex', flexWrap: 'wrap', gap: '8px', padding: '2px 12px 4px' });
+    quick.forEach((t) => {
+      const b = document.createElement('button');
+      b.title = `${t.title} — ${t.desc}`;
+      Object.assign(b.style, { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', width: '84px', padding: '10px 6px', borderRadius: '12px', border: `1px solid ${T.chipBorder}`, background: T.chipBg, cursor: 'pointer', fontFamily: 'inherit' });
+      b.innerHTML = `<span style="font-size:20px;line-height:1">${t.icon}</span><span style="font-size:11px;font-weight:600;text-align:center;line-height:1.2;color:${T.textMuted}">${t.title}</span>`;
+      b.addEventListener('mouseover', () => { b.style.background = T.surfaceHover; });
+      b.addEventListener('mouseout', () => { b.style.background = T.chipBg; });
+      b.addEventListener('click', t.onClick);
+      qaGrid.appendChild(b);
+    });
+    wrap.appendChild(qaGrid);
+
     const heading = document.createElement('div');
     heading.textContent = 'Tips';
-    Object.assign(heading.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em', color: T.textFaint, padding: '4px 12px 8px' });
+    Object.assign(heading.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em', color: T.textFaint, padding: '16px 12px 8px' });
     wrap.appendChild(heading);
     const tips = [
       { icon: '🔗', title: 'Paste a record Id', desc: 'Open the record or view all its fields instantly.' },
@@ -2982,6 +3053,143 @@ function buildSpotlight(tabConfig: TabConfig) {
     resultsContainer.appendChild(wrap);
   };
 
+  // Login-as / incognito-login for a user (same flow as the Users tab).
+  const loginAs = (userId: string, incognito: boolean) => {
+    const cr = (globalThis as any).chrome?.runtime; if (!cr) return;
+    cr.sendMessage({ type: 'GET_SF_CREDENTIALS', hostname: cleanSfDomain(sfHostname()) }, (response: any) => {
+      if (!response?.data?.instanceUrl || !response?.data?.sessionId) return;
+      const { instanceUrl, sessionId } = response.data;
+      const orgId = sessionId.split('!')[0];
+      const retUrl = window.location.pathname || '/';
+      const loginUrl = `${instanceUrl}/servlet/servlet.su?oid=${encodeURIComponent(orgId)}&suorgadminid=${encodeURIComponent(userId)}&retURL=${encodeURIComponent(retUrl)}&targetURL=${encodeURIComponent(retUrl)}`;
+      if (incognito) cr.sendMessage({ type: 'OPEN_INCOGNITO_TAB', url: `${instanceUrl}/secur/frontdoor.jsp?sid=${encodeURIComponent(sessionId)}&retURL=${encodeURIComponent(loginUrl)}` });
+      else window.open(loginUrl, '_blank');
+      hideSpotlightSearch();
+    });
+  };
+
+  // ── Minimal / universal search ─────────────────────────────
+  // One search box across Setup, objects, flows, users and custom shortcuts.
+  // Records are intentionally NOT searched here — pasting a record Id still
+  // surfaces the open-record actions (handled before this runs).
+  type UniRow = { icon: string; title: string; subtitle?: string; meta?: string; url: string; kind: string };
+  const universalSearch = (rawQuery: string) => {
+    resultsContainer.innerHTML = '';
+    const query = rawQuery.trim();
+    const q = query.toLowerCase();
+    if (!q) { resultsContainer.style.display = 'none'; return; } // just the strip
+    resultsContainer.style.display = '';
+
+    const addGroup = (title: string, rows: UniRow[]) => {
+      if (!rows.length) return;
+      const h = document.createElement('div');
+      h.textContent = title;
+      Object.assign(h.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textFaint, padding: '10px 20px 4px' });
+      resultsContainer.appendChild(h);
+      rows.forEach((r) => {
+        const entry = { kind: r.kind, icon: r.icon, title: r.title, subtitle: r.subtitle, meta: r.meta, url: r.url };
+        resultsContainer.appendChild(makeResultRow({
+          icon: r.icon, title: r.title, subtitle: r.subtitle, meta: r.meta, first: false, fav: entry,
+          onClick: () => { recordRecent(entry); window.open(r.url, '_blank'); hideSpotlightSearch(); },
+        }));
+      });
+    };
+
+    // Our own tools — open them in place (falls through the minimal short-circuit).
+    const openTool = (id: string) => { (searchInput as HTMLInputElement).value = ''; activeTab = 'tools'; toolView = id; performSearch(); };
+    const TOOLS: { id: string; icon: string; label: string; desc: string }[] = [
+      { id: 'export', icon: '📤', label: 'Export Data', desc: 'Run SOQL and export CSV' },
+      { id: 'querybuilder', icon: '🧱', label: 'Query Builder', desc: 'Build SOQL visually' },
+      { id: 'sampledata', icon: '🧪', label: 'Sample Data', desc: 'Generate test records' },
+      { id: 'whereused', icon: '🔎', label: 'Where Used', desc: 'Find what references a component' },
+      { id: 'objectmanager', icon: '🛠️', label: 'Object Manager', desc: 'Create objects and fields' },
+      { id: 'automationmap', icon: '🧭', label: 'Automation Map', desc: 'What fires on save' },
+      { id: 'executeanonymous', icon: '⚡', label: 'Execute Anonymous', desc: 'Run Apex' },
+      { id: 'permcompare', icon: '🔐', label: 'Permission Comparison', desc: 'Compare profiles and permission sets' },
+      { id: 'accessmap', icon: '🗺️', label: 'Access Explorer', desc: 'Object, field and user access' },
+      { id: 'dataimport', icon: '⬆️', label: 'Data Import', desc: 'Insert / update / upsert / delete' },
+      { id: 'orglimits', icon: '📈', label: 'Org Limits', desc: 'All org limits and usage' },
+      { id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'This org’s info' },
+    ];
+    const toolHits = TOOLS.filter((t) => t.label.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q)).slice(0, 6);
+    if (toolHits.length) {
+      const th = document.createElement('div');
+      th.textContent = 'Tools';
+      Object.assign(th.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textFaint, padding: '10px 20px 4px' });
+      resultsContainer.appendChild(th);
+      toolHits.forEach((t) => resultsContainer.appendChild(makeResultRow({ icon: t.icon, title: t.label, subtitle: t.desc, meta: 'Tool', first: false, onClick: () => openTool(t.id) })));
+    }
+
+    // Rank label matches above section-only matches so e.g. "user" surfaces the
+    // "Users" page, not just everything in the "Administration > Users" section.
+    const rankLink = (l: { label: string; section: string }) => {
+      const lbl = l.label.toLowerCase();
+      if (lbl === q) return 0;
+      if (lbl.startsWith(q)) return 1;
+      if (lbl.includes(q)) return 2;
+      if (l.section.toLowerCase().includes(q)) return 3;
+      return 99;
+    };
+    addGroup('Setup', setupLinks.map((l) => ({ l, r: rankLink(l) })).filter((x) => x.r < 99).sort((a, b) => a.r - b.r).slice(0, 5).map(({ l }) => ({ icon: '🔗', title: l.label, subtitle: l.section, url: l.isExternal ? l.link : `${lightningOrigin()}${l.link}`, kind: 'setup' })));
+    addGroup('Shortcuts', getCustomShortcuts().filter((s) => s.label.toLowerCase().includes(q) || s.url.toLowerCase().includes(q)).slice(0, 4).map((s) => ({ icon: '🔖', title: s.label, subtitle: 'Custom Shortcut', url: resolveShortcutUrl(s.url), kind: 'shortcut' })));
+    addGroup('Objects', (cachedObjects || []).filter((o: any) => (o.label || '').toLowerCase().includes(q) || (o.apiName || '').toLowerCase().includes(q)).slice(0, 5).map((o: any) => ({ icon: '📦', title: o.label || o.apiName, subtitle: o.apiName, url: `${lightningOrigin()}/lightning/setup/ObjectManager/${encodeURIComponent(o.durableId || o.apiName)}/FieldsAndRelationships/view`, kind: 'object' })));
+    addGroup('Flows', (cachedFlows || []).filter((f: any) => (f.label || '').toLowerCase().includes(q) || (f.apiName || '').toLowerCase().includes(q)).slice(0, 5).map((f: any) => ({ icon: '⚡', title: f.label, subtitle: f.apiName, meta: f.isActive ? 'Active' : 'Inactive', url: `${lightningOrigin()}/lightning/setup/Flows/home`, kind: 'flow' })));
+    // Users — show the same actions (View detail, Fields, ⋯) inline as the Users tab.
+    const userMatches = (cachedUsers || []).filter((u: any) => (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.username || '').toLowerCase().includes(q)).slice(0, 5);
+    if (userMatches.length) {
+      const uh = document.createElement('div');
+      uh.textContent = 'Users';
+      Object.assign(uh.style, { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.06em', color: T.textFaint, padding: '10px 20px 4px' });
+      resultsContainer.appendChild(uh);
+      userMatches.forEach((u: any) => {
+        const user = { id: u.id, name: u.name, email: u.email, username: u.username };
+        const row = document.createElement('div');
+        Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 20px' });
+        row.addEventListener('mouseover', () => { row.style.background = T.rowHover; });
+        row.addEventListener('mouseout', () => { row.style.background = ''; });
+        const ic = document.createElement('span'); ic.textContent = '👤'; Object.assign(ic.style, { fontSize: '16px', flexShrink: '0' });
+        const txt = document.createElement('div'); Object.assign(txt.style, { flex: '1', minWidth: '0' });
+        txt.innerHTML = `<div style="font-size:14px;font-weight:600;color:${T.textPrimary};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${user.name}</div><div style="font-size:12px;color:${T.textFaint};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${user.email || user.username || ''}</div>`;
+        const btns = document.createElement('div'); Object.assign(btns.style, { display: 'flex', gap: '6px', flexShrink: '0' });
+        const acts = userActions(user);
+        const mkBtn = (label: string, onClick: () => void) => {
+          const b = document.createElement('button'); b.textContent = label;
+          Object.assign(b.style, { padding: '5px 10px', fontSize: '12px', fontWeight: '700', borderRadius: '6px', border: `1px solid ${T.chipBorder}`, background: 'transparent', color: T.textPrimary, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' });
+          b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+          return b;
+        };
+        // Login / Incognito only make sense for other users.
+        if (user.id !== currentUserId) {
+          const loginB = mkBtn('Login', () => loginAs(user.id, false));
+          Object.assign(loginB.style, { background: 'rgba(59,130,246,1)', color: '#fff', border: 'none' });
+          const incogB = mkBtn('Incognito', () => loginAs(user.id, true));
+          Object.assign(incogB.style, { background: 'rgba(107,114,128,1)', color: '#fff', border: 'none' });
+          btns.appendChild(loginB); btns.appendChild(incogB);
+        }
+        btns.appendChild(mkBtn('Detail', acts[1].onClick));
+        const more = mkBtn('⋯', () => openUserMenu(more, user));
+        btns.appendChild(more);
+        row.appendChild(ic); row.appendChild(txt); row.appendChild(btns);
+        resultsContainer.appendChild(row);
+      });
+    }
+
+    if (resultsContainer.children.length === 0) {
+      const none = document.createElement('div');
+      Object.assign(none.style, { padding: '16px 20px', color: T.textMuted, fontSize: '13px' });
+      none.textContent = `No matches for “${query}”.`;
+      resultsContainer.appendChild(none);
+    }
+  };
+
+  const warmMinimalCaches = () => {
+    const rerun = () => { if (minimal && document.getElementById('sf-log-analyzer-spotlight-container')) universalSearch((searchInput as HTMLInputElement).value); };
+    if (!cachedObjects) fetchSalesforceObjects().then((r) => { cachedObjects = r; rerun(); }).catch(() => {});
+    if (!cachedFlows) fetchSalesforceFlows().then((r) => { cachedFlows = r; rerun(); }).catch(() => {});
+    if (!cachedUsers) fetchSalesforceUsers().then((r) => { cachedUsers = r; rerun(); }).catch(() => {});
+    ensureCurrentUserId().then(() => rerun()).catch(() => {});
+  };
+
   const performSearch = async () => {
     const query = (searchInput as HTMLInputElement).value.toLowerCase();
     resultsContainer.innerHTML = '';
@@ -2990,6 +3198,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     // 15/18-char record Id, surface quick actions instead of a normal search.
     const rawQuery = (searchInput as HTMLInputElement).value.trim();
     if (isValidSalesforceId(rawQuery)) {
+      resultsContainer.style.display = ''; // minimal view collapses this until needed
       const prefix = rawQuery.substring(0, 3);
       const guessed = COMMON_PREFIXES[prefix];
       const subtitle = guessed ? `${guessed} · ${rawQuery}` : rawQuery;
@@ -3019,6 +3228,31 @@ function buildSpotlight(tabConfig: TabConfig) {
           },
         }));
       }
+      return;
+    }
+
+    // Minimal view: universal search across everything, results on type only.
+    // (When a tool is open we fall through so the tool renders normally.)
+    if (minimal && !toolView) { universalSearch((searchInput as HTMLInputElement).value); return; }
+
+    if (activeTab === 'home') {
+      inputContainer.style.display = 'none';
+      const homeSendBg = (msg: Record<string, unknown>): Promise<any> => new Promise((resolve) => {
+        getSfCredentials().then((creds: any) => {
+          if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' }); return; }
+          (globalThis as any).chrome.runtime.sendMessage({ instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...msg }, (resp: any) => resolve(resp || { success: false }));
+        });
+      });
+      renderHomeInto(resultsContainer, {
+        isDark: currentSpotlightTheme === 'dark',
+        sendBg: homeSendBg,
+        getRecents: () => getRecents() as any,
+        openUrl: (url: string) => { window.open(url, '_blank'); hideSpotlightSearch(); },
+        goToTab: (id: string) => { activateTab(id); },
+        openTool: (id: string) => { activateTab('tools').then(() => { toolView = id; performSearch(); }); },
+        flashToast,
+        lightningOrigin,
+      });
       return;
     }
 
@@ -4000,7 +4234,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'whereused' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -4065,6 +4299,19 @@ function buildSpotlight(tabConfig: TabConfig) {
         }
         if (toolView === 'magicfill') {
           renderMagicFillSettingsInto(resultsContainer, isDark, onBack);
+          return;
+        }
+        if (toolView === 'whereused') {
+          const toolingQuery = (soql: string, tooling = true) => new Promise<{ records: any[]; error?: string }>((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling },
+                (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
+              );
+            });
+          });
+          renderWhereUsedInto(resultsContainer, { isDark, onBack, flashToast, runQuery: toolingQuery });
           return;
         }
         if (toolView === 'shortcuts') {
@@ -4206,6 +4453,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'automationmap', icon: '🧭', label: 'Automation Map', desc: 'What fires on save, in order',
           run: () => { searchInput.value = ''; toolView = 'automationmap'; performSearch(); },
+        },
+        {
+          id: 'whereused', icon: '🔎', label: 'Where Used', desc: 'Find what references a component',
+          run: () => { searchInput.value = ''; toolView = 'whereused'; performSearch(); },
         },
         {
           id: 'executeanonymous', icon: '⚡', label: 'Execute Anonymous', desc: 'Run Apex & analyze the debug log',
@@ -4608,8 +4859,21 @@ function buildSpotlight(tabConfig: TabConfig) {
       tabsContainer.appendChild(moreBtn);
     }
 
+    // Persistent "open in a new tab" control — always visible, even on tabs/tool
+    // views where the search bar (and its open-tab button) is hidden.
+    if (!fullPage) {
+      const otb = document.createElement('button');
+      otb.title = 'Open Spotlight in a new tab';
+      otb.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>`;
+      Object.assign(otb.style, { marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer', color: T.tabInactive, padding: '6px', borderRadius: '8px', display: 'inline-flex', alignItems: 'center' });
+      otb.addEventListener('mouseover', () => { otb.style.background = T.closeHover; });
+      otb.addEventListener('mouseout', () => { otb.style.background = 'transparent'; });
+      otb.addEventListener('click', openSpotlightInNewTab);
+      tabsContainer.appendChild(otb);
+    }
+
     const gear = makeTabButton('Settings', '⚙');
-    gear.style.marginLeft = 'auto';
+    gear.style.marginLeft = fullPage ? 'auto' : '4px';
     gear.title = 'Settings';
     styleTabButton(gear, activeTab === '__settings');
     gear.addEventListener('click', () => activateTab('__settings'));
@@ -4697,6 +4961,51 @@ function buildSpotlight(tabConfig: TabConfig) {
       themeSeg.appendChild(b);
     });
     wrap.appendChild(themeSeg);
+
+    // UI style: default vs. an SLDS (Salesforce-native) skin.
+    const skinHeading = document.createElement('div');
+    skinHeading.textContent = 'UI style';
+    Object.assign(skinHeading.style, { fontSize: '16px', fontWeight: '700', color: T.textPrimary, marginBottom: '4px' });
+    wrap.appendChild(skinHeading);
+    const skinSub = document.createElement('div');
+    skinSub.textContent = 'Keep the default look, or match Salesforce’s Lightning Design System';
+    Object.assign(skinSub.style, { fontSize: '13px', color: T.textMuted, marginBottom: '12px' });
+    wrap.appendChild(skinSub);
+    const skinSeg = document.createElement('div');
+    Object.assign(skinSeg.style, { display: 'inline-flex', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', overflow: 'hidden', marginBottom: '26px' });
+    ([['default', '✦ Default'], ['slds', '☁️ SLDS']] as const).forEach(([val, label]) => {
+      const on = currentUiSkin === val;
+      const b = document.createElement('button');
+      b.textContent = label;
+      Object.assign(b.style, { background: on ? T.accent : 'transparent', color: on ? '#fff' : T.textMuted, border: 'none', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: on ? '700' : '600', fontFamily: 'inherit' });
+      b.addEventListener('click', () => {
+        if (currentUiSkin === val) return;
+        currentUiSkin = val;
+        setUiMode(val);
+        persistSettings({ uiSkin: val });
+        // Rebuild so every getTheme-based surface re-colors, then land back here.
+        reopenSettingsAfterBuild = true;
+        showSpotlightSearch();
+      });
+      skinSeg.appendChild(b);
+    });
+    wrap.appendChild(skinSeg);
+
+    // Minimal (universal-search) view.
+    const mvRow = document.createElement('label');
+    Object.assign(mvRow.style, { display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '26px', padding: '10px 12px', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', maxWidth: '440px' });
+    const mvChk = document.createElement('input'); mvChk.type = 'checkbox'; mvChk.checked = currentMinimalView; mvChk.style.cursor = 'pointer';
+    mvChk.addEventListener('change', () => {
+      currentMinimalView = mvChk.checked;
+      persistSettings({ minimalView: mvChk.checked });
+      // Reopen Settings only when returning to the full view; enabling minimal lands on the search strip.
+      reopenSettingsAfterBuild = !mvChk.checked;
+      showSpotlightSearch();
+    });
+    const mvText = document.createElement('div');
+    mvText.innerHTML = `<div style="font-size:13px;font-weight:700;color:${T.textPrimary}">Minimal view — universal search</div><div style="font-size:12px;color:${T.textMuted}">Just a search bar. Type to search Setup, objects, flows, users and records at once — no tabs, nothing preloaded.</div>`;
+    mvRow.appendChild(mvChk); mvRow.appendChild(mvText);
+    wrap.appendChild(mvRow);
 
     // Object Explorer header-icon toggle
     const oeRow = document.createElement('label');
@@ -4919,11 +5228,21 @@ function buildSpotlight(tabConfig: TabConfig) {
   }
 
   // ─── Show ──────────────────────────────────────────────────
-  renderTabBar();
+  if (!minimal) renderTabBar();
   spotlightContainer.style.display = 'flex';
   spotlightContainer.style.pointerEvents = 'auto';
   modalContent.style.pointerEvents = 'auto';
-  if (reopenSettingsAfterBuild) { reopenSettingsAfterBuild = false; activateTab('__settings'); }
+  if (minimal) {
+    searchInput.placeholder = 'Search Setup, objects, flows and users…';
+    resultsContainer.innerHTML = '';
+    resultsContainer.style.display = 'none'; // just the strip until you type
+    warmMinimalCaches();
+  } else if (pendingSpotlightTarget) {
+    const target = pendingSpotlightTarget; pendingSpotlightTarget = null;
+    if (target.startsWith('tool:')) activateTab('tools').then(() => { toolView = target.slice(5); performSearch(); });
+    else if (target.startsWith('tab:')) activateTab(target.slice(4));
+    else activateTab(tabConfig.defaultTab);
+  } else if (reopenSettingsAfterBuild) { reopenSettingsAfterBuild = false; activateTab('__settings'); }
   else activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab);
   searchInput.focus();
 }
@@ -5078,6 +5397,16 @@ function injectSidebar() {
         if (msg?.type === 'SF_TOOLBAR_OPEN' && window.top === window) {
           showSpotlightSearch();
           maybeShowWhatsNew();
+        } else if (msg?.type === 'SF_OPEN_AT' && window.top === window) {
+          // Right-click context menu → open Spotlight at a specific tab/tool.
+          if (msg.target === 'action:inspect') { launchComponentInspector(); return; }
+          if (msg.target === 'action:recorddetail') {
+            const id = extractRecordIdFromUrl();
+            if (id) showRecordDetail(id); else flashToast('No record detected on this page');
+            return;
+          }
+          pendingSpotlightTarget = msg.target || null;
+          showSpotlightSearch();
         }
       });
     }
@@ -5150,6 +5479,14 @@ function injectSidebar() {
         return false;
       }
 
+      // ⌘+Space (Mac) / Alt+Space (Windows) to open spotlight.
+      if (event.code === 'Space' && (event.metaKey || event.altKey) && !event.ctrlKey && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        showSpotlightSearch();
+        return false;
+      }
+
       // Escape to close panel
       if (event.key === 'Escape' && isPanelOpen) {
         event.preventDefault();
@@ -5171,6 +5508,7 @@ function bootFullPageSpotlight() {
   // Load the saved theme + tab config before building so colors are correct.
   loadSettings((s) => {
     currentSpotlightTheme = s.spotlightTheme;
+    currentUiSkin = s.uiSkin || 'default'; setUiMode(currentUiSkin);
     document.body.style.background = currentSpotlightTheme === 'dark' ? '#0f172a' : '#ffffff';
     loadTabConfig();
     setTimeout(() => buildSpotlight(currentTabConfig), 50);

@@ -1776,3 +1776,54 @@ if (request.type === 'OPEN_INCOGNITO_TAB') {
   chromeRuntime.onInstalled.addListener(startKeepAlive);
   chromeRuntime.onStartup.addListener(startKeepAlive);
 }
+
+// ─── Right-click context menu: every tab + tool ──────────────────────────────
+// Right-clicking the extension icon (or a Salesforce page) opens Spotlight at
+// the chosen tab or tool. Each item's id encodes the target ("sf|tab:home" or
+// "sf|tool:export"); the click is relayed to the active tab's content script.
+const SF_MENU_TABS: [string, string][] = [
+  ['tab:home', '🏠 Home'], ['tab:tools', '🛠️ Tools'], ['tab:setup', '🏠 Setup'],
+  ['tab:users', '👤 Users'], ['tab:flows', '⚡ Flows'], ['tab:metadata', '🧩 Metadata Explorer'],
+  ['tab:security', '🔑 Security'], ['tab:debug', '🐞 Log Explorer'], ['tab:objects', '📦 Objects'],
+  ['tab:apextests', '🧪 Apex Tests'], ['tab:access', '🗺️ Access Explorer'], ['tab:recent', '🕘 Recent'],
+];
+const SF_MENU_TOOLS: [string, string][] = [
+  ['tool:export', '📤 Export Data'], ['tool:querybuilder', '🧱 Query Builder'],
+  ['tool:sampledata', '🧪 Sample Data'], ['tool:whereused', '🔎 Where Used'],
+  ['tool:objectmanager', '🛠️ Object Manager'], ['tool:automationmap', '🧭 Automation Map'],
+  ['tool:executeanonymous', '⚡ Execute Anonymous'], ['tool:permcompare', '🔐 Permission Comparison'],
+  ['tool:accessmap', '🗺️ Access Explorer'], ['tool:dataimport', '⬆️ Data Import'],
+  ['tool:orglimits', '📈 Org Limits'], ['tool:orgdetails', '🏢 Org Details'],
+  ['tool:apiusage', '📊 API Usage'], ['tool:storage', '💾 Storage Insights'],
+  ['tool:shortcuts', '🔖 Custom Shortcuts'], ['tool:release', '🚀 Salesforce Release'],
+  ['tool:magicfill', '✨ Magic Fill'], ['action:inspect', '🔍 Inspect Components'],
+];
+
+function buildContextMenus(): void {
+  const cm = chromeAPI?.contextMenus;
+  if (!cm) return;
+  cm.removeAll(() => {
+    const contexts = ['action', 'page'];
+    // Quick "View record detail" — only on Lightning record pages.
+    cm.create({ id: 'sf|action:recorddetail', title: '🗂️ View record detail', contexts: ['page'], documentUrlPatterns: ['*://*/lightning/r/*'] });
+    // Tabs sit at the top level (Chrome already labels the group "SF Spotlight",
+    // so no extra parent). Only Tools are grouped into a submenu.
+    SF_MENU_TABS.forEach(([t, title]) => cm.create({ id: `sf|${t}`, title, contexts }));
+    cm.create({ id: 'sf-tools', title: 'Tools', contexts });
+    SF_MENU_TOOLS.forEach(([t, title]) => cm.create({ id: `sf|${t}`, parentId: 'sf-tools', title, contexts }));
+  });
+}
+
+if (chromeAPI?.contextMenus) {
+  buildContextMenus();
+  chromeAPI.runtime?.onInstalled?.addListener(buildContextMenus);
+  chromeAPI.runtime?.onStartup?.addListener(buildContextMenus);
+  chromeAPI.contextMenus.onClicked.addListener((info: any, tab: any) => {
+    const id = String(info.menuItemId || '');
+    if (!id.startsWith('sf|')) return;
+    const target = id.slice(3);
+    const send = (tabId: number) => chromeAPI.tabs.sendMessage(tabId, { type: 'SF_OPEN_AT', target }, () => void chromeAPI.runtime?.lastError);
+    if (tab?.id) send(tab.id);
+    else chromeAPI.tabs.query({ active: true, currentWindow: true }, (tabs: any[]) => { if (tabs?.[0]?.id) send(tabs[0].id); });
+  });
+}

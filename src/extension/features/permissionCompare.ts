@@ -1,3 +1,4 @@
+import { getTheme } from '../lib/theme';
 // Permission Comparison: pick two permission sets / profiles and compare their
 // object- and field-level access side by side ("Name Access Comparison").
 // Backend-agnostic: all data comes through the injected runQuery (METADATA_QUERY).
@@ -25,20 +26,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, style?: Partial<CSSSt
 
 export function renderPermissionCompareInto(host: HTMLElement, deps: PermCompareDeps): void {
   const isDark = deps.isDark;
-  const C = {
-    bg: isDark ? '#0e1626' : '#ffffff',
-    panel: isDark ? '#111c30' : '#ffffff',
-    headerBg: isDark ? '#16223b' : '#eef2f7',
-    text: isDark ? '#e2e8f0' : '#1f2937',
-    muted: isDark ? '#94a3b8' : '#64748b',
-    faint: isDark ? 'rgba(148,163,184,0.45)' : 'rgba(31,41,55,0.35)',
-    border: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,0,0,0.12)',
-    divider: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(0,0,0,0.06)',
-    accent: '#3b82f6',
-    grant: isDark ? '#4ade80' : '#16a34a',
-    diff: isDark ? 'rgba(245,158,11,0.14)' : 'rgba(245,158,11,0.12)',
-    zebra: isDark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.02)',
-  };
+  const C = getTheme(isDark);
 
   host.innerHTML = '';
   const root = el('div', { height: '100%', minHeight: '0', display: 'flex', flexDirection: 'column', background: C.bg, color: C.text });
