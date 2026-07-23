@@ -78,6 +78,9 @@
                         <a href="#minimal" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Minimal / Universal Search</a>
                         <a href="#right-click" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Right-click Menu</a>
                         <a href="#where-used-tool" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Where Used</a>
+                        <a href="#flow-manager" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Flow Manager</a>
+                        <a href="#validation-rules" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Validation Rules</a>
+                        <a href="#event-monitor" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Event Monitor</a>
                         <a href="#custom-shortcuts" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Custom Shortcuts</a>
                         <a href="#record-id" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Open records by ID</a>
                         <a href="#record-viewer" class="toc-link block px-3 py-1.5 rounded-md border-l-2 border-transparent text-gray-400 hover:text-white transition-colors">Record viewer & edit</a>
@@ -119,10 +122,17 @@
                 <section id="whatsnew" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
-                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.11.0</span>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.12.0</span>
                     </div>
                     <h3>What's New</h3>
-                    <p>Manage your automation without leaving the page — activate flows and validation rules in a click — plus a redesigned notification system and a completely rebuilt Settings screen.</p>
+                    <p>Watch platform events stream in live, jump into the Web Console, and read every JSON response in colour.</p>
+                    <h4>v1.12.0 — Event Monitor &amp; the Web Console</h4>
+                    <ul>
+                        <li><strong>Event Monitor</strong> — subscribe to a streaming channel and watch messages arrive live. Pick a <strong>Standard</strong> or <strong>Custom Platform Event</strong>, a <strong>Change Data Capture</strong> channel, a <strong>PushTopic</strong> or a <strong>generic channel</strong> from a dropdown (or type any channel), set a <strong>Replay From</strong> id, and Subscribe. Events show newest-first as pretty, syntax-highlighted JSON with the channel, replay id and timestamp, plus a live filter, copy and clear. The streaming (CometD) connection runs in the background and disconnects automatically when you unsubscribe or leave the page.</li>
+                        <li><strong>Web Console (Beta)</strong> — a one-click Tools action that opens the org's <code>/webconsole</code> in a new tab (requires <em>Web Console (Beta)</em> enabled in Setup → Development), with a companion shortcut to the setup page to turn it on.</li>
+                        <li><strong>Syntax-highlighted JSON</strong> — responses in the Event Monitor and REST Explorer are now colour-coded (keys, strings, numbers, booleans, null) in both light and dark themes.</li>
+                        <li><strong>Panel opacity</strong> — the opacity setting now also applies to the Spotlight popup (never the full-page tab), so you can see the page behind it.</li>
+                    </ul>
                     <h4>v1.11.0 — Flow Manager, Validation Rules &amp; a new Settings screen</h4>
                     <ul>
                         <li><strong>Flow Manager</strong> — see every flow in the org with its active and latest version and status, then <strong>activate</strong>, <strong>deactivate</strong> or <strong>open</strong> it in Flow Builder without leaving the panel. Expand a flow to view all its versions and activate any specific one. Filter by status or process type; managed (installed-package) flows are hidden until you tick <em>Show managed</em>.</li>
@@ -258,6 +268,50 @@
                     <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-diagram-project"></i></div>
                     <h3>Where Used</h3>
                     <p>Before you change or delete something, find out what depends on it. Open <strong>Where Used</strong> from the Tools drawer, enter a custom field as <code>Object.Field</code>, or the API name of an Apex class, flow or LWC (or paste its record Id), and see everything that references it — grouped by type (Apex, flows, validation rules, layouts, and more) — using Salesforce's Dependency API.</p>
+                </section>
+
+                <!-- Flow Manager -->
+                <section id="flow-manager" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-bolt"></i></div>
+                    <h3>Flow Manager</h3>
+                    <p>Manage every flow in the org from one place — no more clicking through Setup. Open <strong>Flow Manager</strong> from the Tools drawer to see all flows with their active and latest version and status.</p>
+                    <ul>
+                        <li><strong>Activate / Deactivate / Open</strong> — activate the latest version, deactivate, or open a flow in Flow Builder, right from the row.</li>
+                        <li><strong>Per-version control</strong> — expand a flow to see all its versions (with status and last-modified info) and activate or open any specific one. Reactivate an older version to roll back.</li>
+                        <li><strong>Filter</strong> — search by name, filter by Active / Inactive, or by process type.</li>
+                        <li><strong>Managed flows</strong> — installed-package flows are hidden (and not even fetched) until you tick <em>Show managed</em>; they're shown as locked since packages control them.</li>
+                    </ul>
+                    <p class="text-sm text-gray-500">Activating or deactivating requires the "Manage Flow" permission.</p>
+                </section>
+
+                <!-- Validation Rules -->
+                <section id="validation-rules" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-circle-check"></i></div>
+                    <h3>Validation Rule Manager</h3>
+                    <p>Turn validation rules on and off in bulk without hunting through each object. Open <strong>Validation Rules</strong> from the Tools drawer to see every rule grouped by object, with its error message and status.</p>
+                    <ul>
+                        <li><strong>Activate / Deactivate</strong> — one click per rule; the change is a safe read-modify-write that preserves the formula, error message and display field.</li>
+                        <li><strong>Open</strong> — jump to the rule in Setup.</li>
+                        <li><strong>Filter</strong> — search by rule / object / message, filter by Active / Inactive, or by object.</li>
+                        <li><strong>Managed rules</strong> — shown as locked, since installed packages control them.</li>
+                    </ul>
+                    <p class="text-sm text-gray-500">Toggling requires the "Customize Application" permission.</p>
+                </section>
+
+                <!-- Event Monitor -->
+                <section id="event-monitor" class="doc-section mb-14">
+                    <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400 mb-3"><i class="fa-solid fa-satellite-dish"></i></div>
+                    <h3>Event Monitor</h3>
+                    <p>Subscribe to a streaming channel and watch messages arrive live — great for debugging Platform Events, Change Data Capture and integrations. Open <strong>Event Monitor</strong> from the Tools drawer.</p>
+                    <h4>Subscribe to a channel</h4>
+                    <ul>
+                        <li><strong>Channel Type</strong> — pick <em>Standard Platform Event</em>, <em>Custom Platform Event</em>, <em>Change Data Capture</em>, <em>PushTopic</em> or <em>Generic Streaming Channel</em>; the <strong>Channel</strong> dropdown fills from the org. You can also type any channel path directly (e.g. <code>/event/LoginEventStream</code>, <code>/data/AccountChangeEvent</code>).</li>
+                        <li><strong>Replay From</strong> — <code>-1</code> for new events only, <code>-2</code> for all retained events, or a specific replay id.</li>
+                        <li><strong>Subscribe / Unsubscribe</strong> — the connection runs in the background and disconnects automatically when you unsubscribe or leave the page.</li>
+                    </ul>
+                    <h4>Event Result</h4>
+                    <p>Events stream in newest-first as pretty, syntax-highlighted JSON with the channel, replay id and timestamp, plus a live filter, a copy button and clear.</p>
+                    <p class="text-sm text-gray-500">Needs My Domain and API access. Change Data Capture channels only emit for objects you've enabled under Setup → Change Data Capture; standard monitoring events (e.g. <code>LoginEventStream</code>) require Real-Time Event Monitoring.</p>
                 </section>
 
                 <!-- Custom Shortcuts -->

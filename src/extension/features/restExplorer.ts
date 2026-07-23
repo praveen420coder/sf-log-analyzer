@@ -8,6 +8,7 @@
 // a labelled Save Query action, each backed by chrome.storage.local.
 
 import { getTheme } from '../lib/theme';
+import { highlightJsonText } from '../lib/jsonHighlight';
 
 export interface RestResult { status?: number; statusText?: string; ok?: boolean; body?: string; durationMs?: number; error?: string }
 
@@ -245,10 +246,12 @@ export function renderRestExplorerInto(host: HTMLElement, deps: RestExplorerDeps
     respWrap.appendChild(bar);
 
     let pretty = r.body || '';
-    try { pretty = JSON.stringify(JSON.parse(r.body || ''), null, 2); } catch { /* not JSON */ }
+    let isJson = false;
+    try { pretty = JSON.stringify(JSON.parse(r.body || ''), null, 2); isJson = true; } catch { /* not JSON */ }
     copyBtn.addEventListener('click', () => { navigator.clipboard?.writeText(pretty).then(() => deps.flashToast('Copied response')); });
     const pre = el('pre', { margin: '0', padding: '12px 14px', borderRadius: '10px', background: C.code, border: `1px solid ${C.border}`, color: C.text, fontSize: '12.5px', lineHeight: '1.5', fontFamily: 'monospace', whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: '46vh' });
-    pre.textContent = pretty;
+    if (isJson) pre.innerHTML = highlightJsonText(pretty, isDark);
+    else pre.textContent = pretty;
     respWrap.appendChild(pre);
   };
 

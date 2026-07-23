@@ -33,6 +33,7 @@ import { renderRestExplorerInto } from './features/restExplorer';
 import { renderFlowManagerInto } from './features/flowManager';
 import { renderValidationRuleManagerInto } from './features/validationRuleManager';
 import { renderSettingsPanelInto } from './features/settingsPanel';
+import { renderEventMonitorInto } from './features/eventMonitor';
 import { getTheme, setUiMode } from './lib/theme';
 import { showToast, setToastTheme, setToastEnabled, type ToastType } from './lib/toast';
 import { bumpUsage, get as getStored, KEYS as STORE_KEYS, DEFAULT_PREFS, type Prefs } from './lib/settingsStore';
@@ -56,6 +57,9 @@ let currentSpotlightTheme: 'light' | 'dark' = 'light';
 let currentUiSkin: 'default' | 'slds' = 'default';
 // Minimal (universal-search) view: just a search strip, results on type only.
 let currentMinimalView = false;
+// Spotlight popup opacity (0-100). Applied to the overlay popup only, never the
+// full-page tab. Driven by Settings → Appearance → Opacity.
+let currentPanelOpacity = 100;
 // Set by the right-click context menu to open Spotlight at a specific tab/tool.
 let pendingSpotlightTarget: string | null = null;
 
@@ -253,7 +257,7 @@ function saveToolsOrder(order: string[]): void {
 loadToolsOrder();
 
 // Load the saved spotlight theme so the modal renders with the right appearance.
-loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; currentUiSkin = s.uiSkin || 'default'; setUiMode(currentUiSkin); currentMinimalView = s.minimalView === true; });
+loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; currentUiSkin = s.uiSkin || 'default'; setUiMode(currentUiSkin); currentMinimalView = s.minimalView === true; currentPanelOpacity = typeof s.opacity === 'number' ? s.opacity : 100; });
 // Keep live behavior in sync when settings change (from the Settings screen or
 // another tab). Appearance/tools/tabs update the globals so the NEXT panel open
 // reflects them; prefs (cache/history/notification) apply immediately.
@@ -266,6 +270,7 @@ try {
       if (v.spotlightTheme) { currentSpotlightTheme = v.spotlightTheme; setToastTheme(currentSpotlightTheme === 'dark'); }
       currentUiSkin = v.uiSkin || 'default'; setUiMode(currentUiSkin);
       currentMinimalView = v.minimalView === true;
+      if (typeof v.opacity === 'number') currentPanelOpacity = v.opacity;
     }
     if (changes[TAB_CONFIG_KEY]?.newValue) currentTabConfig = normalizeTabConfig(changes[TAB_CONFIG_KEY].newValue);
     if (changes['sf_spotlight_tools_state']?.newValue) loadToolsState(() => applyAllToolToggles());
@@ -2182,6 +2187,11 @@ function buildSpotlight(tabConfig: TabConfig) {
     modal.style.borderRadius = '24px';
     modal.style.boxShadow = '0 25px 50px rgba(0, 0, 0, 0.5)';
     modal.style.border = `1px solid ${T.modalBorder}`;
+    // Panel opacity applies to the overlay popup only (never the full-page tab).
+    // Default is 100 (fully opaque) → apply nothing so the popup renders normally;
+    // only make it translucent when the user explicitly lowers it below 100.
+    const op = typeof currentPanelOpacity === 'number' ? currentPanelOpacity : 100;
+    if (op < 100) modal.style.opacity = String(Math.max(0.2, op / 100));
   }
 
   // Input container
@@ -3079,6 +3089,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       { id: 'sampledata', icon: '🧪', label: 'Sample Data', desc: 'Generate test records' },
       { id: 'whereused', icon: '🔎', label: 'Where Used', desc: 'Find what references a component' },
       { id: 'restexplorer', icon: '🧪', label: 'REST Explorer', desc: 'Call any Salesforce REST endpoint' },
+      { id: 'eventmonitor', icon: '📡', label: 'Event Monitor', desc: 'Subscribe to platform events & CDC live' },
       { id: 'objectmanager', icon: '🛠️', label: 'Object Manager', desc: 'Create objects and fields' },
       { id: 'automationmap', icon: '🧭', label: 'Automation Map', desc: 'What fires on save' },
       { id: 'flowmanager', icon: '🌊', label: 'Flow Manager', desc: 'View, activate & open flows' },
@@ -4232,7 +4243,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'whereused' || toolView === 'restexplorer' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap' || toolView === 'flowmanager' || toolView === 'validationrules') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'whereused' || toolView === 'restexplorer' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap' || toolView === 'flowmanager' || toolView === 'validationrules' || toolView === 'eventmonitor') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -4456,6 +4467,38 @@ function buildSpotlight(tabConfig: TabConfig) {
           });
           return;
         }
+        if (toolView === 'eventmonitor') {
+          const runQuery = (soql: string) => new Promise<{ records: any[]; error?: string }>((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ records: [], error: 'Salesforce session not detected' }); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { type: 'METADATA_QUERY', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, query: soql, tooling: false },
+                (resp: any) => resolve(resp?.success ? { records: resp.data || [] } : { records: [], error: resp?.error || 'Query failed' }),
+              );
+            });
+          });
+          renderEventMonitorInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            runQuery,
+            describeEvents: () => new Promise((resolve) => {
+              getSfCredentials().then((creds: any) => {
+                if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+                (globalThis as any).chrome.runtime.sendMessage(
+                  { type: 'DESCRIBE_GLOBAL_EVENTS', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+                  (resp: any) => resolve(resp?.success ? { data: resp.data || [] } : { error: resp?.error || 'Describe failed' }),
+                );
+              });
+            }),
+            getCreds: () => getSfCredentials().then((creds: any) => (creds?.instanceUrl && creds?.sessionId ? { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId } : { error: 'Salesforce session not detected' })),
+            openStream: (onMessage) => {
+              const cr = (globalThis as any).chrome?.runtime;
+              const port = cr.connect({ name: 'event-monitor' });
+              port.onMessage.addListener((m: any) => onMessage(m));
+              return { post: (msg: Record<string, unknown>) => { try { port.postMessage(msg); } catch { /* closed */ } }, close: () => { try { port.disconnect(); } catch { /* ignore */ } } };
+            },
+          });
+          return;
+        }
         toolView = null;
       }
 
@@ -4477,6 +4520,24 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => {
             const url = `${lightningOrigin()}/lightning/page/home`;
             recordRecent({ kind: 'tool', icon: '🏠', title: 'Salesforce Home', subtitle: 'Lightning home', meta: 'Tool', url });
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        },
+        {
+          id: 'webconsole', icon: '🖥️', label: 'Web Console (Beta)', desc: 'Open /webconsole — requires Web Console (Beta) enabled in Setup → Development',
+          run: () => {
+            const url = `${lightningOrigin()}/webconsole`;
+            recordRecent({ kind: 'tool', icon: '🖥️', title: 'Web Console (Beta)', subtitle: '/webconsole', meta: 'Tool', url });
+            window.open(url, '_blank');
+            hideSpotlightSearch();
+          },
+        },
+        {
+          id: 'webconsolesetup', icon: '⚙️', label: 'Enable Web Console (Beta)', desc: 'Open the Web Console (Beta) setup page to turn it on',
+          run: () => {
+            const url = `${lightningOrigin()}/lightning/setup/PlatformWebIdeSetup/home`;
+            recordRecent({ kind: 'tool', icon: '⚙️', title: 'Enable Web Console (Beta)', subtitle: 'PlatformWebIdeSetup', meta: 'Setup', url });
             window.open(url, '_blank');
             hideSpotlightSearch();
           },
@@ -4528,6 +4589,10 @@ function buildSpotlight(tabConfig: TabConfig) {
         {
           id: 'restexplorer', icon: '🧪', label: 'REST Explorer', desc: 'Call any Salesforce REST endpoint (Beta)',
           run: () => { searchInput.value = ''; toolView = 'restexplorer'; performSearch(); },
+        },
+        {
+          id: 'eventmonitor', icon: '📡', label: 'Event Monitor', desc: 'Subscribe to platform events, CDC & push topics live',
+          run: () => { searchInput.value = ''; toolView = 'eventmonitor'; performSearch(); },
         },
         {
           id: 'executeanonymous', icon: '⚡', label: 'Execute Anonymous', desc: 'Run Apex & analyze the debug log',

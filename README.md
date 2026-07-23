@@ -78,6 +78,7 @@ SF Spotlight is a Salesforce developer toolkit that lives inside your org, with 
 - **🐞 Log Explorer & Apex Log Analyzer** - Fetch, filter and analyze debug logs (timeline, call tree, SOQL/DML, insights, governor limits)
 - **🌊 Flow Manager** - View every flow's active/latest version and activate, deactivate or open flows (and any specific version)
 - **✅ Validation Rule Manager** - Activate, deactivate and open validation rules by object
+- **📡 Event Monitor** - Subscribe to Platform Events, Change Data Capture, PushTopics and generic channels and watch them live
 - **🧩 Metadata Explorer** - Browse metadata types and their records
 - **🧪 Apex Test Runner** - Run tests and watch results with coverage
 - **🛠️ Object Manager** - Create objects and fields with FLS

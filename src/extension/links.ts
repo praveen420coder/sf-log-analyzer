@@ -261,6 +261,7 @@ export const setupLinks = [
   {label: "Apex Test History", link: "/lightning/setup/ApexTestHistory/home", section: "Platform Tools > Custom Code", prod: false},
   {label: "Apex Triggers", link: "/lightning/setup/ApexTriggers/home", section: "Platform Tools > Custom Code", prod: false},
   {label: "Canvas App Previewer", link: "/lightning/setup/CanvasPreviewerUi/home", section: "Platform Tools > Custom Code", prod: false},
+  {label: "Web Console (Beta)", link: "/lightning/setup/PlatformWebIdeSetup/home", section: "Platform Tools > Custom Code", prod: false},
   {label: "Custom Metadata Types", link: "/lightning/setup/CustomMetadata/home", section: "Platform Tools > Custom Code", prod: false},
   {label: "Custom Permissions", link: "/lightning/setup/CustomPermissions/home", section: "Platform Tools > Custom Code", prod: false},
   {label: "Custom Settings", link: "/lightning/setup/CustomSettings/home", section: "Platform Tools > Custom Code", prod: false},

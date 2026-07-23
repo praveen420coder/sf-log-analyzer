@@ -134,6 +134,86 @@ if (chromeAPI?.runtime?.onConnect) {
   });
 }
 
+// ─── Event Monitor: CometD (Bayeux) streaming subscriber ─────────────────────
+// A long-lived Port drives a handshake → subscribe → long-poll connect loop
+// against the org's /cometd endpoint, streaming Platform Events / CDC / PushTopic
+// / generic-channel messages back to the panel. Runs in the background so it can
+// fetch cross-origin (host_permissions) and hold the long-poll open.
+const EVENT_MONITOR_PORT = 'event-monitor';
+if (chromeAPI?.runtime?.onConnect) {
+  chromeAPI.runtime.onConnect.addListener((port: any) => {
+    if (port.name !== EVENT_MONITOR_PORT) return;
+    const S = { active: false, stop: false, clientId: '', instanceUrl: '', sessionId: '', channel: '', replayId: -1 };
+    const send = (m: any) => { try { port.postMessage(m); } catch { /* port closed */ } };
+
+    const cometd = async (messages: any[]): Promise<any[]> => {
+      const res = await fetch(`${S.instanceUrl}/cometd/${AV}/`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${S.sessionId}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(messages),
+        credentials: 'include',
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.substring(0, 200) || 'Streaming request failed'}`);
+      try { return JSON.parse(text); } catch { throw new Error('Unexpected streaming response'); }
+    };
+
+    const handshakeAndSubscribe = async () => {
+      const hs = await cometd([{ channel: '/meta/handshake', version: '1.0', minimumVersion: '1.0', supportedConnectionTypes: ['long-polling'], advice: { timeout: 60000, interval: 0 }, ext: { replay: true } }]);
+      const h = (hs || []).find((m: any) => m.channel === '/meta/handshake');
+      if (!h?.successful) throw new Error(h?.error || 'Handshake failed (check API access / My Domain)');
+      S.clientId = h.clientId;
+      const sub = await cometd([{ channel: '/meta/subscribe', clientId: S.clientId, subscription: S.channel, ext: { replay: { [S.channel]: S.replayId } } }]);
+      const s = (sub || []).find((m: any) => m.channel === '/meta/subscribe');
+      if (!s?.successful) throw new Error(s?.error || `Could not subscribe to ${S.channel}`);
+    };
+
+    const loop = async () => {
+      while (S.active && !S.stop) {
+        let batch: any[];
+        try {
+          batch = await cometd([{ channel: '/meta/connect', clientId: S.clientId, connectionType: 'long-polling' }]);
+        } catch (e: any) {
+          if (S.stop) return;
+          send({ type: 'error', error: e?.message || 'Connection lost' });
+          await new Promise((r) => setTimeout(r, 2000));
+          if (S.stop) return;
+          try { await handshakeAndSubscribe(); continue; } catch (e2: any) { send({ type: 'error', error: e2?.message || 'Reconnect failed' }); S.active = false; return; }
+        }
+        for (const m of batch || []) {
+          if (m.channel === '/meta/connect') {
+            if (m.successful === false && m.advice?.reconnect === 'handshake') {
+              try { await handshakeAndSubscribe(); } catch (e: any) { send({ type: 'error', error: e?.message || 'Reconnect failed' }); S.active = false; return; }
+            }
+            continue;
+          }
+          if (m.data) send({ type: 'event', channel: m.channel, data: m.data, ts: Date.now() });
+        }
+      }
+    };
+
+    const stop = async () => {
+      S.stop = true; S.active = false;
+      const cid = S.clientId; S.clientId = '';
+      if (cid) { try { await cometd([{ channel: '/meta/disconnect', clientId: cid }]); } catch { /* ignore */ } }
+    };
+
+    port.onMessage.addListener((m: any) => {
+      if (m?.type === 'subscribe') {
+        S.instanceUrl = m.instanceUrl; S.sessionId = m.sessionId; S.channel = m.channel;
+        S.replayId = typeof m.replayId === 'number' ? m.replayId : -1;
+        S.stop = false;
+        handshakeAndSubscribe()
+          .then(() => { S.active = true; send({ type: 'subscribed', channel: S.channel }); loop(); })
+          .catch((e: any) => send({ type: 'error', error: e?.message || 'Subscribe failed' }));
+      } else if (m?.type === 'unsubscribe') {
+        stop().then(() => send({ type: 'unsubscribed' }));
+      }
+    });
+    port.onDisconnect.addListener(() => { stop(); });
+  });
+}
+
 // Keep service worker alive with periodic heartbeat
 let keepAliveInterval: any = null;
 const startKeepAlive = () => {
@@ -958,6 +1038,24 @@ if (chromeRuntime) {
           })
           .catch((err) => sendResponse({ success: false, error: err.message }));
 
+        return true;
+      }
+
+      if (request.type === 'DESCRIBE_GLOBAL_EVENTS') {
+        // Global describe, filtered to Platform Events (they carry a urls.eventSchema)
+        // — excludes Change Data Capture channels (…ChangeEvent). Used by the Event
+        // Monitor's Standard / Custom platform-event pickers.
+        fetch(`${request.instanceUrl}/services/data/v${AV}/sobjects/`, {
+          headers: { 'Authorization': `Bearer ${request.sessionId}` },
+        })
+          .then(res => res.ok ? res.json() : res.text().then(text => { throw new Error(`HTTP ${res.status}: ${text.substring(0, 200) || 'describe failed'}`); }))
+          .then((data) => {
+            const events = (data.sobjects || [])
+              .filter((s: any) => s?.urls?.eventSchema && !String(s.name || '').endsWith('ChangeEvent'))
+              .map((s: any) => ({ name: s.name, label: s.label, custom: !!s.custom }));
+            sendResponse({ success: true, data: events });
+          })
+          .catch(err => sendResponse({ success: false, error: err.message }));
         return true;
       }
 
