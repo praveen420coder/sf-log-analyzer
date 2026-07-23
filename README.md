@@ -72,13 +72,20 @@ Backend will start on `http://localhost:5000`
 
 ## Features
 
-- **🚀 Browser Extension** - One-click access directly from Salesforce
+SF Spotlight is a Salesforce developer toolkit that lives inside your org, with auto-detected credentials (nothing is stored — session ids are read live from cookies).
+
+- **🔎 Spotlight Search** - One search box across Setup, objects, flows, users, permissions, apps and your own tools
+- **🐞 Log Explorer & Apex Log Analyzer** - Fetch, filter and analyze debug logs (timeline, call tree, SOQL/DML, insights, governor limits)
+- **🌊 Flow Manager** - View every flow's active/latest version and activate, deactivate or open flows (and any specific version)
+- **✅ Validation Rule Manager** - Activate, deactivate and open validation rules by object
+- **🧩 Metadata Explorer** - Browse metadata types and their records
+- **🧪 Apex Test Runner** - Run tests and watch results with coverage
+- **🛠️ Object Manager** - Create objects and fields with FLS
+- **⚡ Execute Anonymous, REST Explorer, Where Used, Org Limits & more** - A full Tools drawer
+- **🔔 In-panel notifications** - A stacked toast system with fetch confirmations across every tool
+- **⚙️ Rebuilt Settings** - Appearance, drag-and-drop tab ordering, cache/history, notifications, API version, Data Export, connection manager and usage stats
 - **🔐 Auto-Detection** - Automatic credential extraction from your Salesforce session
-- **📊 Dashboard View** - High-level overview with key metrics
-- **🔍 Detailed Analysis** - In-depth exploration of individual logs
-- **📱 Responsive Design** - Works on desktop and tablet
-- **⚡ Real-time Metrics** - Live statistics on log performance
-- **🛡️ TypeScript** - Fully type-safe application
+- **🛡️ TypeScript** - Fully type-safe, Chrome Manifest V3
 
 ## Tech Stack
 

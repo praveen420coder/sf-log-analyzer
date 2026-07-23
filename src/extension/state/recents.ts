@@ -12,12 +12,27 @@ export interface RecentItem {
 }
 
 const RECENTS_KEY = 'sf_spotlight_recents';
-const MAX_RECENTS = 15;
+let MAX_RECENTS = 15;            // configurable via Settings → History
 const FAVORITES_KEY = 'sf_spotlight_favorites';
 const MAX_FAVORITES = 50;
 
 let recentItems: RecentItem[] = [];
 let favoriteItems: RecentItem[] = [];
+let recentsEnabled = true;      // Settings → History → History retention
+
+// ── History settings (driven by the Settings screen) ────────────────────────
+export function setRecentsEnabled(on: boolean): void { recentsEnabled = on; }
+export function setRecentsLimit(n: number): void {
+  MAX_RECENTS = Math.max(1, n | 0);
+  if (recentItems.length > MAX_RECENTS) { recentItems.length = MAX_RECENTS; saveRecents(); }
+}
+// Drop recents older than `days` (0 = disabled).
+export function pruneRecentsOlderThan(days: number): void {
+  if (!days || days <= 0) return;
+  const cutoff = Date.now() - days * 86400000;
+  const next = recentItems.filter((r) => (r.ts || 0) >= cutoff);
+  if (next.length !== recentItems.length) { recentItems = next; saveRecents(); }
+}
 
 const hasChromeStorage = () => !!(globalThis as any).chrome?.storage?.local;
 
@@ -48,7 +63,7 @@ export function loadRecentsAndFavorites(): void {
 
 // Push an item to the top of the recents list, de-duping by url + kind.
 export function recordRecent(entry: Omit<RecentItem, 'ts'>): void {
-  if (!entry.url) return;
+  if (!entry.url || !recentsEnabled) return;
   recentItems = recentItems.filter((r) => !(r.url === entry.url && r.kind === entry.kind));
   recentItems.unshift({ ...entry, ts: Date.now() });
   if (recentItems.length > MAX_RECENTS) recentItems.length = MAX_RECENTS;

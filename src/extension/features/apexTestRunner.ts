@@ -2,6 +2,7 @@
 // and view code coverage. Backend-agnostic via injected runQuery / runTests.
 
 import { getTheme } from '../lib/theme';
+import { bumpUsage } from '../lib/settingsStore';
 
 export interface ApexTestDeps {
   isDark: boolean;
@@ -361,6 +362,7 @@ export function renderApexTestsInto(host: HTMLElement, deps: ApexTestDeps): void
     deps.flashToast('Submitting test run…');
     const { jobId, error } = await deps.runTests({ tests });
     if (error || !jobId) { deps.flashToast(error || 'Failed to start tests'); return; }
+    bumpUsage('apexTests');
     runs.unshift({ jobId, enqueued: new Date(), classes: [], results: [], done: false });
     expandedRuns.add(jobId);
     activeJobId = jobId;

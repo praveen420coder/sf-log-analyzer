@@ -119,10 +119,17 @@
                 <section id="whatsnew" class="doc-section mb-14">
                     <div class="flex items-center gap-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-brand-500/15 flex items-center justify-center text-brand-400"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
-                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.10.0</span>
+                        <span class="text-xs font-mono bg-brand-500/20 text-brand-300 px-2 py-1 rounded border border-brand-500/30">v1.11.0</span>
                     </div>
                     <h3>What's New</h3>
-                    <p>A friendlier front door and faster ways in: a Home dashboard, a dependency finder, a strip-only universal search, a right-click menu for every feature, and an optional Salesforce-native look.</p>
+                    <p>Manage your automation without leaving the page — activate flows and validation rules in a click — plus a redesigned notification system and a completely rebuilt Settings screen.</p>
+                    <h4>v1.11.0 — Flow Manager, Validation Rules &amp; a new Settings screen</h4>
+                    <ul>
+                        <li><strong>Flow Manager</strong> — see every flow in the org with its active and latest version and status, then <strong>activate</strong>, <strong>deactivate</strong> or <strong>open</strong> it in Flow Builder without leaving the panel. Expand a flow to view all its versions and activate any specific one. Filter by status or process type; managed (installed-package) flows are hidden until you tick <em>Show managed</em>.</li>
+                        <li><strong>Validation Rule Manager</strong> — every validation rule grouped by object, with one-click <strong>activate</strong> / <strong>deactivate</strong> (a safe read-modify-write that preserves the formula and error message) and <strong>Open</strong> in Setup. Search and filter by object or status; managed rules are shown as locked.</li>
+                        <li><strong>Redesigned notifications</strong> — a polished, stacked toast system in the bottom-right corner used across every tool, with success / info / error / loading states and "N fetched" confirmations (e.g. flows, logs, records). Toggle in-extension notifications in Settings.</li>
+                        <li><strong>Rebuilt Settings</strong> — a full settings screen with a sidebar: Appearance (theme, panel, on-page tweaks), <strong>Tabs</strong> (drag-and-drop reorder, show/hide, default tab), Cache, History retention, Notifications, Privacy, <strong>Salesforce API version</strong> (now drives every API call), <strong>Data Export</strong> preferences, <strong>Connection</strong> manager (copy a live session id / access token / SFDX-style auth JSON, or remove an org), and usage statistics.</li>
+                    </ul>
                     <h4>v1.10.0 — Home, universal search &amp; right-click access</h4>
                     <ul>
                         <li><strong>Home tab</strong> — a dashboard front door: org identity and environment, at-a-glance API &amp; storage health, debug-session status, quick actions, and your recent items.</li>
@@ -130,7 +137,7 @@
                         <li><strong>Minimal view (universal search)</strong> — an optional strip-only mode: one search box across Setup, objects, flows, users, custom shortcuts and your own tools, with results only as you type. Enable it in Settings.</li>
                         <li><strong>Right-click menu</strong> — open any tab or tool straight from the extension's context menu, plus a "View record detail" item on record pages.</li>
                         <li><strong>SLDS UI style</strong> — an optional skin that matches the Salesforce Lightning Design System, toggled in Settings.</li>
-                        <li><strong>Quicker open</strong> — a new <code>⌘/Alt+Space</code> shortcut, an inline (Inspector-style) autocomplete in Data Export, and a quick-actions launcher on the Setup tab.</li>
+                        <li><strong>Quicker open</strong> — a new <code>Option/Win+Space</code> shortcut, an inline (Inspector-style) autocomplete in Data Export, and a quick-actions launcher on the Setup tab.</li>
                     </ul>
                     <h4>v1.9.0 — Sample data, Magic Fill &amp; the API console</h4>
                     <ul>
@@ -511,16 +518,17 @@
                 <section id="settings" class="doc-section mb-14">
                     <div class="w-10 h-10 rounded-lg bg-gray-500/15 flex items-center justify-center text-gray-300 mb-3"><i class="fa-solid fa-sliders"></i></div>
                     <h3>Settings</h3>
-                    <p>Tune how the panel fits into your workflow from the Settings view:</p>
+                    <p>Open the ⚙ <strong>Settings</strong> tab for a full settings screen with a sidebar, grouped into sections:</p>
                     <ul>
-                        <li><strong>Panel position</strong> — dock the panel on the left or right side of the screen.</li>
-                        <li><strong>Panel opacity</strong> — slide from transparent to opaque (10%–100%) so you can keep an eye on the page behind it.</li>
-                        <li><strong>Panel width</strong> — adjust how much room the analyzer takes up.</li>
-                        <li><strong>Light / Dark theme</strong> — switch the Spotlight appearance.</li>
-                        <li><strong>UI style</strong> — keep the default look or switch on an <strong>SLDS</strong> skin that matches the Salesforce Lightning Design System.</li>
-                        <li><strong>Minimal view</strong> — collapse the panel to a single universal-search strip (see <a href="#minimal" class="text-brand-400 hover:underline">Minimal / Universal Search</a>).</li>
-                        <li><strong>Manage tabs</strong> — reorder, show/hide, and pick the default tab.</li>
-                        <li><strong>Reset</strong> — restore all preferences to their defaults in one click.</li>
+                        <li><strong>Appearance</strong> — Light / Dark theme (applies instantly), panel position (left/right), width, opacity and vertical position, an optional <strong>SLDS</strong> skin, <strong>Minimal view</strong> (a single universal-search strip — see <a href="#minimal" class="text-brand-400 hover:underline">Minimal / Universal Search</a>), the Object Explorer header icon, and on-page tweaks (show field API names, hide the Lightning dev bar, Magic Fill).</li>
+                        <li><strong>Tabs</strong> — reorder the panel tabs by <strong>drag-and-drop</strong> (or the arrows), show/hide any tab, and choose which tab opens first.</li>
+                        <li><strong>Cache &amp; History</strong> — control metadata caching and how much recent-activity history is kept, with one-click clear buttons.</li>
+                        <li><strong>Notifications</strong> — toggle in-extension toasts and the footer API activity console.</li>
+                        <li><strong>Privacy</strong> — a plain-English summary: everything runs locally in your browser, nothing is ever transmitted, and it's a developer tool meant for sandbox / scratch / dev orgs.</li>
+                        <li><strong>Salesforce</strong> — pick the <strong>API version</strong> used for every REST, Tooling and SOAP call.</li>
+                        <li><strong>Data Export</strong> — CSV separator, query behavior (Tooling by default, hide relationship columns, formula-field autocomplete, SOQL typo-fix, seed from the current record), execution time / local time, and editor &amp; history preferences.</li>
+                        <li><strong>Connection</strong> — every org you've launched from, with an editable nickname, and buttons to copy a live <strong>session id</strong>, <strong>access token</strong> or an SFDX-style <strong>auth JSON</strong> (read from cookies on demand — never stored), or remove an org.</li>
+                        <li><strong>Support</strong> — usage statistics, plus links to leave a review or report a bug.</li>
                     </ul>
                     <p>Your preferences are saved and persist across sessions.</p>
                 </section>
@@ -538,7 +546,7 @@
                             </tr></thead>
                             <tbody class="divide-y divide-dark-border">
                                 <tr><td class="py-3 px-5 text-gray-300">Open Spotlight Search</td><td class="py-3 px-5 font-mono text-brand-400">Alt + T</td><td class="py-3 px-5 font-mono text-brand-400">Option + T</td></tr>
-                                <tr><td class="py-3 px-5 text-gray-300">Open Spotlight Search (alt.)</td><td class="py-3 px-5 font-mono text-brand-400">Alt + Space</td><td class="py-3 px-5 font-mono text-brand-400">⌘ + Space</td></tr>
+                                <tr><td class="py-3 px-5 text-gray-300">Open Spotlight Search (alt.)</td><td class="py-3 px-5 font-mono text-brand-400">⊞ Win + Space</td><td class="py-3 px-5 font-mono text-brand-400">⌥ Option + Space</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open Log Analyzer Panel</td><td class="py-3 px-5 font-mono text-brand-400">Alt + S</td><td class="py-3 px-5 font-mono text-brand-400">Option + S</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Open Record Detail panel</td><td class="py-3 px-5 font-mono text-brand-400">Alt + D</td><td class="py-3 px-5 font-mono text-brand-400">Option + D</td></tr>
                                 <tr><td class="py-3 px-5 text-gray-300">Toggle Component Inspector</td><td class="py-3 px-5 font-mono text-brand-400">Alt + Z</td><td class="py-3 px-5 font-mono text-brand-400">Option + Z</td></tr>

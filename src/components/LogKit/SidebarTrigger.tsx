@@ -11,7 +11,7 @@ const SidebarTrigger: React.FC<SidebarTriggerProps> = ({ onOpenLogs, onOpenSpotl
     {/* Top: open Spotlight search */}
     <button
       onClick={onOpenSpotlight}
-      title="Open Spotlight search  —  Alt/Option + T   or   ⌘/Alt + Space"
+      title="Open Spotlight search  —  Alt/Option + T   or   Option/Win + Space"
       className="bg-black opacity-40 hover:opacity-100 transition-all flex flex-col items-center justify-center w-full h-14 group"
     >
       <Search size={11} className="text-white mb-1 transform group-hover:scale-110 transition-transform" />

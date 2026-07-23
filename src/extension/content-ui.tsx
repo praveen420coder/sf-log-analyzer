@@ -6,9 +6,9 @@ import type { MetaType } from './spotlight/metadataCatalog';
 import { initObjectExplorer } from './features/objectExplorer';
 import { COMMON_PREFIXES, isValidSalesforceId } from './lib/salesforceId';
 import { createIdLink } from './lib/idMenu';
-import { loadRecentsAndFavorites, getRecents, getFavorites, recordRecent, clearRecents, isFavorite, toggleFavorite } from './state/recents';
+import { loadRecentsAndFavorites, getRecents, getFavorites, recordRecent, clearRecents, isFavorite, toggleFavorite, setRecentsEnabled, setRecentsLimit, pruneRecentsOlderThan } from './state/recents';
 import type { RecentItem } from './state/recents';
-import { STORAGE_KEY, loadSettings, persistSettings, saveSpotlightTheme } from './state/settings';
+import { STORAGE_KEY, loadSettings } from './state/settings';
 import type { ExtensionSettings } from './state/settings';
 import { SPOTLIGHT_PAGE, sfHostname, cleanSfDomain, lightningOrigin, setupOrigin, getSfCredentials, activeSfHost } from './lib/sfUrls';
 import { toolsState, loadToolsState, saveToolsState, applyToolToggle, applyShowFieldApi, applyAllToolToggles } from './state/toolsState';
@@ -29,7 +29,13 @@ import { renderSampleDataInto } from './features/sampleDataGenerator';
 import { ensureMagicStyles } from './features/magicFill';
 import { renderHomeInto } from './features/homeTab';
 import { renderWhereUsedInto } from './features/whereUsed';
+import { renderRestExplorerInto } from './features/restExplorer';
+import { renderFlowManagerInto } from './features/flowManager';
+import { renderValidationRuleManagerInto } from './features/validationRuleManager';
+import { renderSettingsPanelInto } from './features/settingsPanel';
 import { getTheme, setUiMode } from './lib/theme';
+import { showToast, setToastTheme, setToastEnabled, type ToastType } from './lib/toast';
+import { bumpUsage, get as getStored, KEYS as STORE_KEYS, DEFAULT_PREFS, type Prefs } from './lib/settingsStore';
 
 import { enterInspectMode, isInspecting, exitInspectMode } from './features/componentInspector';
 
@@ -58,8 +64,25 @@ let pendingSpotlightTarget: string | null = null;
 let apiConsoleHandle: ApiConsoleHandle | null = null;
 // Whether the Object Explorer icon is shown in the Salesforce global header.
 let objectExplorerEnabled = true;
-// When a theme toggle rebuilds the modal, reopen the Settings panel afterwards.
-let reopenSettingsAfterBuild = false;
+
+// Settings-driven behavior flags (Settings → Cache / History / Notification).
+let metadataCacheEnabled = true;   // reuse in-memory metadata caches
+let metadataCacheAutoUpdate = false; // refresh caches on each panel open
+let apiActivityConsoleEnabled = true; // show the footer API activity console
+
+// Apply the prefs bag to the live behavior flags + subsystems. Called at startup
+// and whenever sf_spotlight_prefs changes, so Settings toggles take effect.
+function applyPrefs(p: Partial<Prefs>): void {
+  const prefs = { ...DEFAULT_PREFS, ...(p || {}) };
+  metadataCacheEnabled = prefs.cacheEnabled;
+  metadataCacheAutoUpdate = prefs.cacheAutoUpdate;
+  apiActivityConsoleEnabled = prefs.notifSpinner;
+  setToastEnabled(prefs.notifToast);
+  setRecentsEnabled(prefs.historyEnabled);
+  setRecentsLimit(prefs.historyLimit ? prefs.historyMax : 9999);
+  if (prefs.historyAutoDelete) pruneRecentsOlderThan(prefs.historyMaxDays);
+}
+getStored<Partial<Prefs>>(STORE_KEYS.prefs, {}).then(applyPrefs);
 
 function isSalesforcePage(): boolean {
   const visualForceDomains = ["visualforce.com", "vf.force.com"];
@@ -198,15 +221,6 @@ function loadTabConfig(): void {
   }
 }
 
-function saveTabConfig(cfg: TabConfig): void {
-  currentTabConfig = cfg;
-  if ((globalThis as any).chrome?.storage?.local) {
-    (globalThis as any).chrome.storage.local.set({ [TAB_CONFIG_KEY]: cfg });
-  } else {
-    try { localStorage.setItem(TAB_CONFIG_KEY, JSON.stringify(cfg)); } catch { /* ignore */ }
-  }
-}
-
 loadTabConfig();
 
 // ─── Tools grid order (user-draggable) ─────────────────────────
@@ -240,13 +254,23 @@ loadToolsOrder();
 
 // Load the saved spotlight theme so the modal renders with the right appearance.
 loadSettings((s) => { currentSpotlightTheme = s.spotlightTheme; objectExplorerEnabled = s.showObjectExplorer !== false; currentUiSkin = s.uiSkin || 'default'; setUiMode(currentUiSkin); currentMinimalView = s.minimalView === true; });
-// Keep the global-header toggle in sync when changed from another tab/the settings page.
+// Keep live behavior in sync when settings change (from the Settings screen or
+// another tab). Appearance/tools/tabs update the globals so the NEXT panel open
+// reflects them; prefs (cache/history/notification) apply immediately.
 try {
   (globalThis as any).chrome?.storage?.onChanged?.addListener((changes: any, area: string) => {
-    if (area === 'local' && changes[STORAGE_KEY]?.newValue) {
+    if (area !== 'local') return;
+    if (changes[STORAGE_KEY]?.newValue) {
       const v = changes[STORAGE_KEY].newValue;
       objectExplorerEnabled = v.showObjectExplorer !== false;
+      if (v.spotlightTheme) { currentSpotlightTheme = v.spotlightTheme; setToastTheme(currentSpotlightTheme === 'dark'); }
+      currentUiSkin = v.uiSkin || 'default'; setUiMode(currentUiSkin);
+      currentMinimalView = v.minimalView === true;
     }
+    if (changes[TAB_CONFIG_KEY]?.newValue) currentTabConfig = normalizeTabConfig(changes[TAB_CONFIG_KEY].newValue);
+    if (changes['sf_spotlight_tools_state']?.newValue) loadToolsState(() => applyAllToolToggles());
+    if (changes[STORE_KEYS.prefs]?.newValue) applyPrefs(changes[STORE_KEYS.prefs].newValue);
+    if (changes[EXPORT_SETTINGS_KEY]?.newValue) exportSettings = { ...exportSettings, ...changes[EXPORT_SETTINGS_KEY].newValue };
   });
 } catch { /* ignore */ }
 
@@ -280,8 +304,14 @@ let cachedApps: any[] | null = null;
 // When opened as spotlight.html?...&analyzeLog=<logId>, jump straight into the
 // Log Explorer and open the analyzer for that log.
 let pageAnalyzeLog: string | null = null;
+// When opened as spotlight.html?...&tool=<id>, open that tool in the full-page tab.
+let pageTool: string | null = null;
+// When opened as spotlight.html?...&tab=<id>, land directly on that tab (e.g. __settings).
+let pageTab: string | null = null;
 if (SPOTLIGHT_PAGE) {
   try { pageAnalyzeLog = new URLSearchParams(location.search).get('analyzeLog'); } catch { pageAnalyzeLog = null; }
+  try { pageTool = new URLSearchParams(location.search).get('tool'); } catch { pageTool = null; }
+  try { pageTab = new URLSearchParams(location.search).get('tab'); } catch { pageTab = null; }
 }
 
 // ─── Record ID detection & Record Detail viewer ──────────────────────────────
@@ -306,21 +336,25 @@ function extractRecordIdFromUrl(): string | null {
   return null;
 }
 
-function flashToast(message: string): void {
-  const isDark = currentSpotlightTheme === 'dark';
-  const el = document.createElement('div');
-  el.textContent = message;
-  Object.assign(el.style, {
-    position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
-    background: isDark ? 'rgba(15,23,42,0.95)' : 'rgba(31,41,55,0.95)', color: '#fff',
-    padding: '10px 18px', borderRadius: '10px', fontSize: '13px', fontWeight: '600',
-    fontFamily: 'Inter, system-ui, sans-serif', zIndex: '2147483648',
-    boxShadow: '0 10px 30px rgba(0,0,0,0.35)', opacity: '0', transition: 'opacity 0.2s',
-    pointerEvents: 'none',
-  });
-  document.body.appendChild(el);
-  requestAnimationFrame(() => { el.style.opacity = '1'; });
-  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); }, 2200);
+// Every tool's toast flows through the shared bottom-right toast system. When a
+// caller doesn't specify a type we infer error vs. success from the wording so
+// existing one-arg callers still get sensible colouring.
+function flashToast(message: string, type?: ToastType): void {
+  setToastTheme(currentSpotlightTheme === 'dark');
+  const t = type ?? (/\b(fail|failed|error|couldn.t|could not|not detected|invalid|denied|unable|no response)\b/i.test(message) ? 'error' : 'success');
+  showToast(message, { type: t });
+}
+
+// Open the FULL spotlight page (with its tab strip + footer) in a new browser
+// tab, landed on the Settings tab. Used when the panel is a small overlay, where
+// an embedded settings UI would be cramped.
+function openExtensionSettings(): void {
+  const cr = (globalThis as any).chrome?.runtime;
+  if (!cr?.getURL) return;
+  const host = cleanSfDomain(sfHostname());
+  const url = `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(host)}&tab=__settings`;
+  if (cr.sendMessage) cr.sendMessage({ type: 'OPEN_TAB', url });
+  else window.open(url, '_blank');
 }
 
 function formatFieldValue(value: any): string {
@@ -1101,7 +1135,6 @@ function loadExportSettings(): void {
     if (res?.[EXPORT_SETTINGS_KEY]) exportSettings = { ...exportSettings, ...res[EXPORT_SETTINGS_KEY] };
   });
 }
-function saveExportSettings(): void { (globalThis as any).chrome?.storage?.local?.set({ [EXPORT_SETTINGS_KEY]: exportSettings }); }
 loadExportSettings();
 
 // Handoff from the Query Builder → Export view.
@@ -1467,6 +1500,7 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
   const run = () => {
     let query = ta.value.trim();
     if (!query) return;
+    bumpUsage('soql');
     if (exportSettings.typoFix) { const fixed = fixSoqlTypos(query); if (fixed !== query) { query = fixed; ta.value = query; } }
     tabs[active].query = query; tabs[active].tooling = tooling.cb.checked; tabs[active].queryAll = qall.cb.checked;
     status.textContent = 'Running…'; status.style.color = C.textMuted;
@@ -1811,76 +1845,6 @@ function renderExportInto(host: HTMLElement, isDark: boolean, onBack: () => void
   if (runFromBuilder) setTimeout(run, 80);
 }
 
-// Appends the Data Export setting rows into a container (used by the main
-// settings panel) — colors are supplied so it matches the host theme.
-function appendExportSettings(body: HTMLElement, C: { border: string; divider: string; inputBg: string; textPrimary: string; textMuted: string; accent: string }): void {
-  const row = (title: string, hint: string, control: HTMLElement) => {
-    const r = document.createElement('div');
-    Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '16px', padding: '14px 0', borderBottom: `1px solid ${C.divider}` });
-    const txt = document.createElement('div'); txt.style.flex = '1';
-    const t = document.createElement('div'); t.textContent = title; Object.assign(t.style, { fontSize: '14px', fontWeight: '700', color: C.textPrimary });
-    const h = document.createElement('div'); h.textContent = hint; Object.assign(h.style, { fontSize: '12px', color: C.textMuted, marginTop: '2px' });
-    txt.appendChild(t); txt.appendChild(h);
-    control.style.flexShrink = '0';
-    r.appendChild(txt); r.appendChild(control);
-    body.appendChild(r);
-  };
-  const mkToggle = (get: () => boolean, set: (v: boolean) => void) => {
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = get();
-    Object.assign(cb.style, { width: '18px', height: '18px', cursor: 'pointer', accentColor: C.accent });
-    cb.addEventListener('change', () => { set(cb.checked); saveExportSettings(); });
-    return cb;
-  };
-
-  const sep = document.createElement('select');
-  Object.assign(sep.style, { padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, cursor: 'pointer', fontFamily: 'inherit' });
-  [['Comma  (,)', ','], ['Semicolon  (;)', ';'], ['Tab', '\t']].forEach(([label, val]) => { const o = document.createElement('option'); o.value = val; o.textContent = label; sep.appendChild(o); });
-  sep.value = exportSettings.separator;
-  sep.addEventListener('change', () => { exportSettings.separator = sep.value as ExportSettings['separator']; saveExportSettings(); });
-  row('CSV separator', 'Delimiter for Download CSV and Copy as CSV.', sep);
-
-  row('Wrap long values', 'Let result cells wrap instead of truncating with “…”.', mkToggle(() => exportSettings.wrap, (v) => { exportSettings.wrap = v; }));
-  row('Hide relationship columns', 'Hide parent columns like Owner.Name from the table and exports.', mkToggle(() => exportSettings.hideRelations, (v) => { exportSettings.hideRelations = v; }));
-  row('Default to Tooling API', 'New query tabs start with the Tooling API checkbox on.', mkToggle(() => exportSettings.defaultTooling, (v) => { exportSettings.defaultTooling = v; }));
-
-  row('Display query execution time', 'Show how long each query took, in milliseconds.', mkToggle(() => exportSettings.showExecTime, (v) => { exportSettings.showExecTime = v; }));
-  row('Show local time', 'Render date/time values in your local timezone in the table.', mkToggle(() => exportSettings.localTime, (v) => { exportSettings.localTime = v; }));
-  row('Use SObject context', 'When opening Export from a record/object page, seed the query with that object.', mkToggle(() => exportSettings.sobjectContext, (v) => { exportSettings.sobjectContext = v; }));
-  row('Show buttons', 'Show the secondary action buttons (Plan, Save, History, Copy, Download).', mkToggle(() => exportSettings.showButtons, (v) => { exportSettings.showButtons = v; }));
-  row('Show stop button', 'Show a Stop button while a query runs so you can cancel long queries.', mkToggle(() => exportSettings.showStop, (v) => { exportSettings.showStop = v; }));
-  row('Include formula fields from suggestions', 'Suggest formula (calculated) fields in autocomplete.', mkToggle(() => exportSettings.includeFormula, (v) => { exportSettings.includeFormula = v; }));
-  row('Disable query input autofocus', 'Don’t focus the query editor automatically when Export opens.', mkToggle(() => exportSettings.disableAutofocus, (v) => { exportSettings.disableAutofocus = v; }));
-  row('Enable query typo fix', 'On Run, clean up the query: remove stray/double commas, a comma before FROM, and extra spaces.', mkToggle(() => exportSettings.typoFix, (v) => { exportSettings.typoFix = v; }));
-  row('Prompt template name', 'Ask for a name when saving a query (off = auto-name).', mkToggle(() => exportSettings.promptTemplateName, (v) => { exportSettings.promptTemplateName = v; }));
-
-  const mkNum = (get: () => number, set: (v: number) => void, min: number, max: number, step: number, dflt: number) => {
-    const i = document.createElement('input'); i.type = 'number'; i.min = String(min); i.max = String(max); i.step = String(step); i.value = String(get());
-    Object.assign(i.style, { width: '90px', padding: '7px 10px', fontSize: '13px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none', fontFamily: 'inherit' });
-    i.addEventListener('change', () => { const n = parseInt(i.value, 10); const v = isNaN(n) ? dflt : Math.max(min, Math.min(max, n)); set(v); i.value = String(v); saveExportSettings(); });
-    return i;
-  };
-  row('Queries kept in history', 'How many recent queries to remember.', mkNum(() => exportSettings.historyLimit, (v) => { exportSettings.historyLimit = v; }, 5, 200, 5, 30));
-  row('Saved queries limit', 'Maximum number of saved queries.', mkNum(() => exportSettings.savedLimit, (v) => { exportSettings.savedLimit = v; }, 5, 200, 5, 50));
-  row('Max rows to display', 'How many rows to render in the table (exports include all).', mkNum(() => exportSettings.maxRows, (v) => { exportSettings.maxRows = v; }, 50, 10000, 50, 1000));
-
-  // Query templates (one per line) — surfaced in the Saved/History dropdown.
-  const tplWrap = document.createElement('div');
-  Object.assign(tplWrap.style, { padding: '14px 0' });
-  const tplTitle = document.createElement('div'); tplTitle.textContent = 'Query templates'; Object.assign(tplTitle.style, { fontSize: '14px', fontWeight: '700', color: C.textPrimary });
-  const tplHint = document.createElement('div'); tplHint.textContent = 'One SOQL query per line. These appear under “Templates” in the Saved/History menu.'; Object.assign(tplHint.style, { fontSize: '12px', color: C.textMuted, margin: '2px 0 8px' });
-  const tplArea = document.createElement('textarea');
-  tplArea.value = (exportSettings.templates || []).join('\n'); tplArea.spellcheck = false;
-  Object.assign(tplArea.style, { width: '100%', minHeight: '90px', boxSizing: 'border-box', resize: 'vertical', padding: '10px 12px', fontFamily: 'Fira Code, monospace', fontSize: '12px', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.inputBg, color: C.textPrimary, outline: 'none' });
-  tplArea.addEventListener('change', () => { exportSettings.templates = tplArea.value.split('\n').map((s) => s.trim()).filter(Boolean); saveExportSettings(); });
-  tplWrap.appendChild(tplTitle); tplWrap.appendChild(tplHint); tplWrap.appendChild(tplArea);
-  body.appendChild(tplWrap);
-
-  const note = document.createElement('div');
-  note.textContent = 'Settings are saved automatically and persist across sessions.';
-  Object.assign(note.style, { fontSize: '12px', color: C.textMuted, marginTop: '14px' });
-  body.appendChild(note);
-}
-
 // Visual SOQL builder — pick object, fields, functions, filters, order, limit.
 function renderQueryBuilderInto(host: HTMLElement, isDark: boolean, onBack: () => void, openExport: (query: string, run: boolean) => void): void {
   host.innerHTML = '';
@@ -2107,6 +2071,11 @@ function renderQueryBuilderInto(host: HTMLElement, isDark: boolean, onBack: () =
 function showSpotlightSearch() {
   const existing = document.getElementById('sf-log-analyzer-spotlight-container');
   if (existing) existing.remove();
+  // Cache acceleration off, or auto-update on → drop persisted metadata caches so
+  // this open pulls fresh data. (Within an open, per-keystroke caching still works.)
+  if (!metadataCacheEnabled || metadataCacheAutoUpdate) {
+    cachedUsers = cachedFlows = cachedObjects = cachedSecurity = cachedDebugLogs = cachedApps = null;
+  }
   if (!document.body) {
     console.warn('Document body not available for spotlight search');
     return;
@@ -2125,6 +2094,9 @@ function buildSpotlight(tabConfig: TabConfig) {
   // Minimal universal-search view: just a search strip (overlay only), results on type.
   // A pending context-menu target forces the full view so its tabs/tools are reachable.
   const minimal = currentMinimalView && !fullPage && !pendingSpotlightTarget;
+  // Settings: embed in-panel when we're a full-page tab (roomy); otherwise open
+  // the standalone settings page in its own browser tab (the overlay is too small).
+  const openSettings = () => { if (fullPage) activateTab('__settings'); else openExtensionSettings(); };
   const T = {
     backdrop: isDark ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.2)',
     modalBg: isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.15)',
@@ -2288,8 +2260,8 @@ function buildSpotlight(tabConfig: TabConfig) {
     Object.assign(mGear.style, { marginLeft: '6px', padding: '8px', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '8px', fontSize: '20px', lineHeight: '1', color: T.iconStroke });
     mGear.addEventListener('mouseover', () => { mGear.style.backgroundColor = T.closeHover; });
     mGear.addEventListener('mouseout', () => { mGear.style.backgroundColor = 'transparent'; });
-    // The results area is collapsed until you type, so reveal it to show Settings.
-    mGear.addEventListener('click', () => { resultsContainer.style.display = ''; renderSettingsPanel(); });
+    // Minimal view is always an overlay — open the standalone settings tab.
+    mGear.addEventListener('click', () => openExtensionSettings());
     inputContainer.appendChild(mGear);
   }
   inputContainer.appendChild(closeBtn);
@@ -2308,8 +2280,6 @@ function buildSpotlight(tabConfig: TabConfig) {
   let pendingAnalyzeLogId: string | null = (SPOTLIGHT_PAGE && pageAnalyzeLog) ? pageAnalyzeLog : null;
   // When set (on the Tools tab), a tool detail view is shown in-panel instead of the grid.
   let toolView: string | null = null;
-  // Active section in the ⚙ settings panel.
-  let settingsCat: 'general' | 'export' = 'general';
   // Debug Logs live auto-refresh timer (cleared when leaving the tab).
   let debugLiveTimer: any = null;
   // Metadata Explorer: currently-selected type id (null = show the type list).
@@ -2592,7 +2562,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   // Live API-activity console — transparency panel above the footer.
   const apiConsoleWrap = document.createElement('div');
   apiConsoleWrap.style.flexShrink = '0';
-  if (!minimal) apiConsoleHandle = renderApiConsoleInto(apiConsoleWrap, { isDark });
+  if (!minimal && apiActivityConsoleEnabled) apiConsoleHandle = renderApiConsoleInto(apiConsoleWrap, { isDark });
 
   // Minimal view = search strip only: no tabs, no console, no footer, no tips.
   if (!minimal) modal.appendChild(tabsContainer);   // tabs on top
@@ -3046,7 +3016,7 @@ function buildSpotlight(tabConfig: TabConfig) {
     const tips = [
       { icon: '🔗', title: 'Paste a record Id', desc: 'Open the record or view all its fields instantly.' },
       { icon: '🗂️', title: `Press ${isMac ? 'Option' : 'Alt'}+D on a record`, desc: 'See every field, its value and type — and edit inline.' },
-      { icon: '🌓', title: 'Light or dark', desc: 'Switch the Spotlight theme in Settings.', onClick: () => activateTab('__settings') },
+      { icon: '🌓', title: 'Light or dark', desc: 'Switch the Spotlight theme in Settings.', onClick: () => openSettings() },
       { icon: '⚡', title: 'Search everything', desc: 'Setup, Objects, Users, Flows, Permissions, Apps and more.' },
     ];
     tips.forEach((t) => wrap.appendChild(makeTipRow(t)));
@@ -3095,15 +3065,24 @@ function buildSpotlight(tabConfig: TabConfig) {
       });
     };
 
-    // Our own tools — open them in place (falls through the minimal short-circuit).
-    const openTool = (id: string) => { (searchInput as HTMLInputElement).value = ''; activeTab = 'tools'; toolView = id; performSearch(); };
+    // Our own tools — open in a new full-page tab (minimal view stays a strip).
+    const openTool = (id: string) => {
+      const cr = (globalThis as any).chrome?.runtime;
+      const host = cleanSfDomain(sfHostname());
+      const url = cr?.getURL ? `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(host)}&tool=${encodeURIComponent(id)}` : '';
+      if (url) cr.sendMessage({ type: 'OPEN_TAB', url });
+      hideSpotlightSearch();
+    };
     const TOOLS: { id: string; icon: string; label: string; desc: string }[] = [
       { id: 'export', icon: '📤', label: 'Export Data', desc: 'Run SOQL and export CSV' },
       { id: 'querybuilder', icon: '🧱', label: 'Query Builder', desc: 'Build SOQL visually' },
       { id: 'sampledata', icon: '🧪', label: 'Sample Data', desc: 'Generate test records' },
       { id: 'whereused', icon: '🔎', label: 'Where Used', desc: 'Find what references a component' },
+      { id: 'restexplorer', icon: '🧪', label: 'REST Explorer', desc: 'Call any Salesforce REST endpoint' },
       { id: 'objectmanager', icon: '🛠️', label: 'Object Manager', desc: 'Create objects and fields' },
       { id: 'automationmap', icon: '🧭', label: 'Automation Map', desc: 'What fires on save' },
+      { id: 'flowmanager', icon: '🌊', label: 'Flow Manager', desc: 'View, activate & open flows' },
+      { id: 'validationrules', icon: '✅', label: 'Validation Rules', desc: 'Activate, deactivate & open rules' },
       { id: 'executeanonymous', icon: '⚡', label: 'Execute Anonymous', desc: 'Run Apex' },
       { id: 'permcompare', icon: '🔐', label: 'Permission Comparison', desc: 'Compare profiles and permission sets' },
       { id: 'accessmap', icon: '🗺️', label: 'Access Explorer', desc: 'Object, field and user access' },
@@ -3133,7 +3112,21 @@ function buildSpotlight(tabConfig: TabConfig) {
     addGroup('Setup', setupLinks.map((l) => ({ l, r: rankLink(l) })).filter((x) => x.r < 99).sort((a, b) => a.r - b.r).slice(0, 5).map(({ l }) => ({ icon: '🔗', title: l.label, subtitle: l.section, url: l.isExternal ? l.link : `${lightningOrigin()}${l.link}`, kind: 'setup' })));
     addGroup('Shortcuts', getCustomShortcuts().filter((s) => s.label.toLowerCase().includes(q) || s.url.toLowerCase().includes(q)).slice(0, 4).map((s) => ({ icon: '🔖', title: s.label, subtitle: 'Custom Shortcut', url: resolveShortcutUrl(s.url), kind: 'shortcut' })));
     addGroup('Objects', (cachedObjects || []).filter((o: any) => (o.label || '').toLowerCase().includes(q) || (o.apiName || '').toLowerCase().includes(q)).slice(0, 5).map((o: any) => ({ icon: '📦', title: o.label || o.apiName, subtitle: o.apiName, url: `${lightningOrigin()}/lightning/setup/ObjectManager/${encodeURIComponent(o.durableId || o.apiName)}/FieldsAndRelationships/view`, kind: 'object' })));
-    addGroup('Flows', (cachedFlows || []).filter((f: any) => (f.label || '').toLowerCase().includes(q) || (f.apiName || '').toLowerCase().includes(q)).slice(0, 5).map((f: any) => ({ icon: '⚡', title: f.label, subtitle: f.apiName, meta: f.isActive ? 'Active' : 'Inactive', url: `${lightningOrigin()}/lightning/setup/Flows/home`, kind: 'flow' })));
+    // Build the real Flow Builder URL (matches the Flows tab), not the Flows home.
+    const flowUrl = (f: any): string => {
+      const origin = lightningOrigin();
+      const isManaged = !!f.manageableState && f.manageableState !== 'unmanaged';
+      let flowId = '';
+      if (isManaged && f.apiName && f.versionNumber) {
+        const ns = f.namespacePrefix;
+        const fullApiName = (ns && !f.apiName.startsWith(`${ns}__`)) ? `${ns}__${f.apiName}` : f.apiName;
+        flowId = `${fullApiName}-${f.versionNumber}`;
+      } else if (f.versionId) {
+        flowId = f.versionId;
+      }
+      return flowId ? `${origin}/builder_platform_interaction/flowBuilder.app?flowId=${flowId}` : `${origin}/lightning/setup/Flows/home`;
+    };
+    addGroup('Flows', (cachedFlows || []).filter((f: any) => (f.label || '').toLowerCase().includes(q) || (f.apiName || '').toLowerCase().includes(q)).slice(0, 5).map((f: any) => ({ icon: '⚡', title: f.label, subtitle: f.apiName, meta: f.isActive ? 'Active' : 'Inactive', url: flowUrl(f), kind: 'flow' })));
     // Users — show the same actions (View detail, Fields, ⋯) inline as the Users tab.
     const userMatches = (cachedUsers || []).filter((u: any) => (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.username || '').toLowerCase().includes(q)).slice(0, 5);
     if (userMatches.length) {
@@ -3394,7 +3387,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       resultsContainer.appendChild(resultsList);
 
     } else if (activeTab === 'objects') {
-      if (!cachedObjects) cachedObjects = await fetchSalesforceObjects();
+      if (!cachedObjects) { cachedObjects = await fetchSalesforceObjects(); if (cachedObjects.length) flashToast(`${cachedObjects.length} objects fetched`, 'success'); }
       const objectsList = cachedObjects || [];
 
       let filtered = objectsList;
@@ -3541,6 +3534,7 @@ function buildSpotlight(tabConfig: TabConfig) {
         }
         mdRecords = res.records;
         metadataRecordsCache[cat.id] = mdRecords;
+        if (mdRecords.length) flashToast(`${mdRecords.length.toLocaleString()} ${cat.label} records fetched`, 'success');
       }
 
       const filteredRecords = query.length === 0 ? mdRecords : mdRecords.filter((r) => displayColumns.some((c) => fmtVal(c.key, getVal(r, c.key)).toLowerCase().includes(query)));
@@ -3625,7 +3619,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       return;
 
     } else if (activeTab === 'users') {
-      if (!cachedUsers) cachedUsers = await fetchSalesforceUsers();
+      if (!cachedUsers) { cachedUsers = await fetchSalesforceUsers(); if (cachedUsers.length) flashToast(`${cachedUsers.length} users fetched`, 'success'); }
       await ensureCurrentUserId();
       const usersList = cachedUsers || [];
 
@@ -3877,7 +3871,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       resultsContainer.appendChild(resultsList);
 
     } else if (activeTab === 'security') {
-      if (!cachedSecurity) cachedSecurity = await fetchSalesforceSecurity();
+      if (!cachedSecurity) { cachedSecurity = await fetchSalesforceSecurity(); if (cachedSecurity.length) flashToast(`${cachedSecurity.length} security records fetched`, 'success'); }
       const securityList = cachedSecurity || [];
 
       let filtered = securityList;
@@ -4005,6 +3999,7 @@ function buildSpotlight(tabConfig: TabConfig) {
         resultsContainer.appendChild(loading);
         withLogBody(id, (body) => {
           resultsContainer.innerHTML = '';
+          bumpUsage('debugLogs');
           renderLogAnalyzerInto(resultsContainer, body, { isDark: currentSpotlightTheme === 'dark', logName: name, onBack: () => performSearch() });
         });
       };
@@ -4099,9 +4094,11 @@ function buildSpotlight(tabConfig: TabConfig) {
       paintLive();
       const updateFooter = () => { fstatus.textContent = `${selected.size} selected · ${logs.length} log${logs.length === 1 ? '' : 's'}`; };
 
-      const refresh = (loading: boolean) => { if (loading) fstatus.textContent = 'Loading…'; fetchDebugLogs().then((l) => { cachedDebugLogs = l; logs = l; [...selected].forEach((id) => { if (!logs.some((x) => x.Id === id)) selected.delete(id); }); renderTable(); updateFooter(); }); };
+      // `announce` shows a "N logs fetched" toast — only for the first load and
+      // manual refreshes, never the 4s Live poll (which would spam toasts).
+      const refresh = (loading: boolean, announce = false) => { if (loading) fstatus.textContent = 'Loading…'; fetchDebugLogs().then((l) => { cachedDebugLogs = l; logs = l; [...selected].forEach((id) => { if (!logs.some((x) => x.Id === id)) selected.delete(id); }); renderTable(); updateFooter(); if (announce) flashToast(`${l.length} log${l.length === 1 ? '' : 's'} fetched`, 'success'); }); };
       liveBtn.addEventListener('click', () => { live = !live; if (live) { debugLiveTimer = setInterval(() => refresh(false), 4000); } else if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; } paintLive(); });
-      refreshBtn.addEventListener('click', () => refresh(true));
+      refreshBtn.addEventListener('click', () => refresh(true, true));
       delBtn.addEventListener('click', () => {
         if (selected.size === 0) { flashToast('Select logs to delete'); return; }
         if (!window.confirm(`Delete ${selected.size} log(s)? This can't be undone.`)) return;
@@ -4115,11 +4112,12 @@ function buildSpotlight(tabConfig: TabConfig) {
       [liveBtn, refreshBtn, delBtn, dlSelBtn, fstatus].forEach((el) => footer.appendChild(el));
 
       renderTable(); updateFooter();
-      refresh(logs.length === 0);
+      // Announce only when this is a real (uncached) first load.
+      refresh(logs.length === 0, logs.length === 0);
       return;
 
     } else if (activeTab === 'flows') {
-      if (!cachedFlows) cachedFlows = await fetchSalesforceFlows();
+      if (!cachedFlows) { cachedFlows = await fetchSalesforceFlows(); if (cachedFlows.length) flashToast(`${cachedFlows.length} flows fetched`, 'success'); }
       const flowsList = cachedFlows || [];
 
       let filtered = flowsList;
@@ -4170,7 +4168,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       resultsContainer.appendChild(resultsList);
 
     } else if (activeTab === 'apps') {
-      if (!cachedApps) cachedApps = await fetchSalesforceApps();
+      if (!cachedApps) { cachedApps = await fetchSalesforceApps(); if (cachedApps.length) flashToast(`${cachedApps.length} apps & tabs fetched`, 'success'); }
       const appsList = cachedApps || [];
 
       let filtered = appsList;
@@ -4234,7 +4232,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       // Typing a query exits back to the grid.
       if (query.length > 0) toolView = null;
       // The search bar is dead weight inside the query editor — hide it for Export/Builder.
-      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'whereused' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap') ? 'none' : 'flex';
+      inputContainer.style.display = (toolView === 'export' || toolView === 'querybuilder' || toolView === 'permcompare' || toolView === 'accessmap' || toolView === 'dataimport' || toolView === 'sampledata' || toolView === 'magicfill' || toolView === 'whereused' || toolView === 'restexplorer' || toolView === 'orglimits' || toolView === 'shortcuts' || toolView === 'objectmanager' || toolView === 'executeanonymous' || toolView === 'automationmap' || toolView === 'flowmanager' || toolView === 'validationrules') ? 'none' : 'flex';
       if (toolView) {
         const isDark = currentSpotlightTheme === 'dark';
         const onBack = () => { inputContainer.style.display = 'flex'; toolView = null; performSearch(); };
@@ -4312,6 +4310,19 @@ function buildSpotlight(tabConfig: TabConfig) {
             });
           });
           renderWhereUsedInto(resultsContainer, { isDark, onBack, flashToast, runQuery: toolingQuery });
+          return;
+        }
+        if (toolView === 'restexplorer') {
+          const sendRest = (method: string, endpoint: string, body?: string) => new Promise<any>((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ error: 'Salesforce session not detected' }); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { type: 'REST_EXPLORE', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, method, endpoint, body },
+                (resp: any) => resolve(resp?.success ? resp.data : { error: resp?.error || 'Request failed' }),
+              );
+            });
+          });
+          renderRestExplorerInto(resultsContainer, { isDark, onBack, flashToast, sendRest });
           return;
         }
         if (toolView === 'shortcuts') {
@@ -4401,6 +4412,50 @@ function buildSpotlight(tabConfig: TabConfig) {
           });
           return;
         }
+        if (toolView === 'flowmanager') {
+          const sendBg = <T,>(msg: Record<string, unknown>): Promise<T> => new Promise((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' } as T); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...msg },
+                (resp: any) => resolve((resp ?? { success: false, error: 'No response from extension' }) as T),
+              );
+            });
+          });
+          renderFlowManagerInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            lightningOrigin: lightningOrigin(),
+            openUrl: (url) => { (globalThis as any).chrome.runtime.sendMessage({ type: 'OPEN_TAB', url }); },
+            listFlows: (scope) => sendBg<{ success: boolean; data?: any[]; error?: string }>({ type: 'GET_ALL_FLOWS', scope })
+              .then((r) => (r.success ? { data: r.data || [] } : { error: r.error || 'Could not load flows.' })),
+            listAllVersions: (scope) => sendBg<{ success: boolean; data?: any[]; error?: string }>({ type: 'GET_ALL_FLOW_VERSIONS', scope })
+              .then((r) => (r.success ? { data: r.data || [] } : { error: r.error || 'Could not load versions.' })),
+            setActiveVersion: (definitionId, versionNumber) => sendBg<{ success: boolean; error?: string }>({ type: 'FLOW_SET_ACTIVE_VERSION', definitionId, versionNumber })
+              .then((r) => ({ success: !!r.success, error: r.error })),
+          });
+          return;
+        }
+        if (toolView === 'validationrules') {
+          const sendBg = <T,>(msg: Record<string, unknown>): Promise<T> => new Promise((resolve) => {
+            getSfCredentials().then((creds: any) => {
+              if (!creds?.instanceUrl || !creds?.sessionId) { resolve({ success: false, error: 'Salesforce session not detected' } as T); return; }
+              (globalThis as any).chrome.runtime.sendMessage(
+                { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId, ...msg },
+                (resp: any) => resolve((resp ?? { success: false, error: 'No response from extension' }) as T),
+              );
+            });
+          });
+          renderValidationRuleManagerInto(resultsContainer, {
+            isDark, onBack, flashToast,
+            lightningOrigin: lightningOrigin(),
+            openUrl: (url) => { (globalThis as any).chrome.runtime.sendMessage({ type: 'OPEN_TAB', url }); },
+            listRules: (scope) => sendBg<{ success: boolean; data?: any[]; error?: string }>({ type: 'GET_VALIDATION_RULES', scope })
+              .then((r) => (r.success ? { data: r.data || [] } : { error: r.error || 'Could not load validation rules.' })),
+            setActive: (ruleId, active) => sendBg<{ success: boolean; error?: string }>({ type: 'SET_VALIDATION_RULE_ACTIVE', ruleId, active })
+              .then((r) => ({ success: !!r.success, error: r.error })),
+          });
+          return;
+        }
         toolView = null;
       }
 
@@ -4425,6 +4480,10 @@ function buildSpotlight(tabConfig: TabConfig) {
             window.open(url, '_blank');
             hideSpotlightSearch();
           },
+        },
+        {
+          id: 'settings', icon: '⚙️', label: 'Settings', desc: 'Open the extension settings page',
+          run: () => { openSettings(); hideSpotlightSearch(); },
         },
         {
           id: 'classic', icon: '🕹️', label: 'Switch to Classic', desc: 'Open Salesforce Classic',
@@ -4455,8 +4514,20 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => { searchInput.value = ''; toolView = 'automationmap'; performSearch(); },
         },
         {
+          id: 'flowmanager', icon: '🌊', label: 'Flow Manager', desc: 'View, activate, deactivate & open flows',
+          run: () => { searchInput.value = ''; toolView = 'flowmanager'; performSearch(); },
+        },
+        {
+          id: 'validationrules', icon: '✅', label: 'Validation Rules', desc: 'Activate, deactivate & open validation rules',
+          run: () => { searchInput.value = ''; toolView = 'validationrules'; performSearch(); },
+        },
+        {
           id: 'whereused', icon: '🔎', label: 'Where Used', desc: 'Find what references a component',
           run: () => { searchInput.value = ''; toolView = 'whereused'; performSearch(); },
+        },
+        {
+          id: 'restexplorer', icon: '🧪', label: 'REST Explorer', desc: 'Call any Salesforce REST endpoint (Beta)',
+          run: () => { searchInput.value = ''; toolView = 'restexplorer'; performSearch(); },
         },
         {
           id: 'executeanonymous', icon: '⚡', label: 'Execute Anonymous', desc: 'Run Apex & analyze the debug log',
@@ -4727,6 +4798,23 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   let selectedIndex = -1;
 
+  // Settings render natively in-panel (like every other tab screen), keeping the
+  // tab strip and footer. Wired to the same chrome.storage keys the panel uses.
+  const renderSettingsPanel = () => {
+    resultsContainer.style.display = '';
+    renderSettingsPanelInto(resultsContainer, {
+      isDark: currentSpotlightTheme === 'dark',
+      // Apply the new theme to the entire panel by rebuilding it, landing back on
+      // the Settings tab — matches the old panel's instant theme switch.
+      applyTheme: (theme) => {
+        currentSpotlightTheme = theme;
+        setToastTheme(theme === 'dark');
+        pendingSpotlightTarget = 'tab:__settings';
+        showSpotlightSearch();
+      },
+    });
+  };
+
   const activateTab = async (id: string) => {
     activeTab = id;
     selectedIndex = -1;
@@ -4875,309 +4963,13 @@ function buildSpotlight(tabConfig: TabConfig) {
     const gear = makeTabButton('Settings', '⚙');
     gear.style.marginLeft = fullPage ? 'auto' : '4px';
     gear.title = 'Settings';
+    // Enlarge just the gear glyph so Settings stands out in the tab strip.
+    const gearIcon = gear.querySelector('span');
+    if (gearIcon) { (gearIcon as HTMLElement).style.fontSize = '19px'; (gearIcon as HTMLElement).style.marginRight = '7px'; }
     styleTabButton(gear, activeTab === '__settings');
-    gear.addEventListener('click', () => activateTab('__settings'));
+    gear.addEventListener('click', () => openSettings());
     tabButtons['__settings'] = gear;
     tabsContainer.appendChild(gear);
-  };
-
-  // ─── Settings panel (reorder / default / hide) ─────────────
-  const renderSettingsPanel = () => {
-    resultsContainer.innerHTML = '';
-    const rootS = document.createElement('div');
-    Object.assign(rootS.style, { display: 'flex', height: '100%', minHeight: '0' });
-    resultsContainer.appendChild(rootS);
-
-    // Sidebar: categories grouped by feature.
-    const sidebar = document.createElement('div');
-    Object.assign(sidebar.style, { width: '168px', flexShrink: '0', borderRight: `1px solid ${T.divider}`, padding: '16px 10px', display: 'flex', flexDirection: 'column', gap: '4px' });
-    rootS.appendChild(sidebar);
-    const navItem = (id: 'general' | 'export', icon: string, label: string) => {
-      const on = settingsCat === id;
-      const b = document.createElement('button');
-      b.innerHTML = `<span style="margin-right:8px">${icon}</span>${label}`;
-      Object.assign(b.style, { display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: '13px', fontWeight: on ? '700' : '600', background: on ? T.surface : 'transparent', color: on ? T.textPrimary : T.textMuted });
-      b.addEventListener('mouseover', () => { if (settingsCat !== id) b.style.background = T.surface; });
-      b.addEventListener('mouseout', () => { if (settingsCat !== id) b.style.background = 'transparent'; });
-      b.addEventListener('click', () => { settingsCat = id; renderSettingsPanel(); });
-      sidebar.appendChild(b);
-    };
-    navItem('general', '🧩', 'General');
-    navItem('export', '📤', 'Data Export');
-
-    // Content for the selected category.
-    const content = document.createElement('div');
-    Object.assign(content.style, { flex: '1', minWidth: '0', minHeight: '0', overflow: 'auto', padding: '20px 28px' });
-    rootS.appendChild(content);
-
-    if (settingsCat === 'export') {
-      const exHeading = document.createElement('div');
-      exHeading.textContent = 'Data Export';
-      Object.assign(exHeading.style, { fontSize: '16px', fontWeight: '700', color: T.textPrimary, marginBottom: '4px' });
-      content.appendChild(exHeading);
-      const exSub = document.createElement('div');
-      exSub.textContent = 'Preferences for the Export Data & Query Builder tools';
-      Object.assign(exSub.style, { fontSize: '13px', color: T.textMuted, marginBottom: '10px' });
-      content.appendChild(exSub);
-      const exBody = document.createElement('div');
-      Object.assign(exBody.style, { display: 'flex', flexDirection: 'column', gap: '2px' });
-      content.appendChild(exBody);
-      appendExportSettings(exBody, {
-        border: isDark ? 'rgba(148,163,184,0.3)' : 'rgba(31,41,55,0.2)',
-        divider: T.divider,
-        inputBg: isDark ? 'rgba(255,255,255,0.06)' : '#ffffff',
-        textPrimary: T.textPrimary, textMuted: T.textMuted, accent: T.accent,
-      });
-      return;
-    }
-
-    // ── General: appearance (light / dark) ──
-    const wrap = content;
-    const apHeading = document.createElement('div');
-    apHeading.textContent = 'Appearance';
-    Object.assign(apHeading.style, { fontSize: '16px', fontWeight: '700', color: T.textPrimary, marginBottom: '4px' });
-    wrap.appendChild(apHeading);
-    const apSub = document.createElement('div');
-    apSub.textContent = 'Switch Spotlight between light and dark mode';
-    Object.assign(apSub.style, { fontSize: '13px', color: T.textMuted, marginBottom: '12px' });
-    wrap.appendChild(apSub);
-
-    const themeSeg = document.createElement('div');
-    Object.assign(themeSeg.style, { display: 'inline-flex', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', overflow: 'hidden', marginBottom: '26px' });
-    ([['light', '☀️ Light'], ['dark', '🌙 Dark']] as const).forEach(([val, label]) => {
-      const on = currentSpotlightTheme === val;
-      const b = document.createElement('button');
-      b.textContent = label;
-      Object.assign(b.style, { background: on ? T.accent : 'transparent', color: on ? '#fff' : T.textMuted, border: 'none', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: on ? '700' : '600', fontFamily: 'inherit' });
-      b.addEventListener('click', () => {
-        if (currentSpotlightTheme === val) return;
-        currentSpotlightTheme = val;
-        saveSpotlightTheme(val);
-        if (SPOTLIGHT_PAGE) document.body.style.background = val === 'dark' ? '#0f172a' : '#ffffff';
-        // Rebuild so every token re-colors, then land back on this settings page.
-        reopenSettingsAfterBuild = true;
-        showSpotlightSearch();
-      });
-      themeSeg.appendChild(b);
-    });
-    wrap.appendChild(themeSeg);
-
-    // UI style: default vs. an SLDS (Salesforce-native) skin.
-    const skinHeading = document.createElement('div');
-    skinHeading.textContent = 'UI style';
-    Object.assign(skinHeading.style, { fontSize: '16px', fontWeight: '700', color: T.textPrimary, marginBottom: '4px' });
-    wrap.appendChild(skinHeading);
-    const skinSub = document.createElement('div');
-    skinSub.textContent = 'Keep the default look, or match Salesforce’s Lightning Design System';
-    Object.assign(skinSub.style, { fontSize: '13px', color: T.textMuted, marginBottom: '12px' });
-    wrap.appendChild(skinSub);
-    const skinSeg = document.createElement('div');
-    Object.assign(skinSeg.style, { display: 'inline-flex', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', overflow: 'hidden', marginBottom: '26px' });
-    ([['default', '✦ Default'], ['slds', '☁️ SLDS']] as const).forEach(([val, label]) => {
-      const on = currentUiSkin === val;
-      const b = document.createElement('button');
-      b.textContent = label;
-      Object.assign(b.style, { background: on ? T.accent : 'transparent', color: on ? '#fff' : T.textMuted, border: 'none', padding: '8px 18px', cursor: 'pointer', fontSize: '13px', fontWeight: on ? '700' : '600', fontFamily: 'inherit' });
-      b.addEventListener('click', () => {
-        if (currentUiSkin === val) return;
-        currentUiSkin = val;
-        setUiMode(val);
-        persistSettings({ uiSkin: val });
-        // Rebuild so every getTheme-based surface re-colors, then land back here.
-        reopenSettingsAfterBuild = true;
-        showSpotlightSearch();
-      });
-      skinSeg.appendChild(b);
-    });
-    wrap.appendChild(skinSeg);
-
-    // Minimal (universal-search) view.
-    const mvRow = document.createElement('label');
-    Object.assign(mvRow.style, { display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '26px', padding: '10px 12px', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', maxWidth: '440px' });
-    const mvChk = document.createElement('input'); mvChk.type = 'checkbox'; mvChk.checked = currentMinimalView; mvChk.style.cursor = 'pointer';
-    mvChk.addEventListener('change', () => {
-      currentMinimalView = mvChk.checked;
-      persistSettings({ minimalView: mvChk.checked });
-      // Reopen Settings only when returning to the full view; enabling minimal lands on the search strip.
-      reopenSettingsAfterBuild = !mvChk.checked;
-      showSpotlightSearch();
-    });
-    const mvText = document.createElement('div');
-    mvText.innerHTML = `<div style="font-size:13px;font-weight:700;color:${T.textPrimary}">Minimal view — universal search</div><div style="font-size:12px;color:${T.textMuted}">Just a search bar. Type to search Setup, objects, flows, users and records at once — no tabs, nothing preloaded.</div>`;
-    mvRow.appendChild(mvChk); mvRow.appendChild(mvText);
-    wrap.appendChild(mvRow);
-
-    // Object Explorer header-icon toggle
-    const oeRow = document.createElement('label');
-    Object.assign(oeRow.style, { display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '26px', padding: '10px 12px', border: `1px solid ${T.chipBorder}`, borderRadius: '10px', maxWidth: '440px' });
-    const oeChk = document.createElement('input'); oeChk.type = 'checkbox'; oeChk.checked = objectExplorerEnabled; oeChk.style.cursor = 'pointer';
-    oeChk.addEventListener('change', () => { objectExplorerEnabled = oeChk.checked; persistSettings({ showObjectExplorer: oeChk.checked }); });
-    const oeText = document.createElement('div');
-    oeText.innerHTML = `<div style="font-size:13px;font-weight:700;color:${T.textPrimary}">Object Explorer icon</div><div style="font-size:12px;color:${T.textMuted}">Show the Object Explorer icon in the Salesforce global header on record pages</div>`;
-    oeRow.appendChild(oeChk); oeRow.appendChild(oeText);
-    wrap.appendChild(oeRow);
-
-    // ── General: customize tabs ──
-    const heading = document.createElement('div');
-    heading.textContent = 'Customize tabs';
-    heading.style.fontSize = '16px';
-    heading.style.fontWeight = '700';
-    heading.style.color = T.textPrimary;
-    heading.style.marginBottom = '4px';
-    wrap.appendChild(heading);
-
-    const sub = document.createElement('div');
-    sub.textContent = 'Drag to reorder · pick a default · show or hide';
-    sub.style.fontSize = '13px';
-    sub.style.color = T.textMuted;
-    sub.style.marginBottom = '16px';
-    wrap.appendChild(sub);
-
-    let dragSrcId: string | null = null;
-
-    tabConfig.order.forEach(id => {
-      const def = ALL_SPOTLIGHT_TABS.find(t => t.id === id);
-      if (!def) return;
-      const isHidden = tabConfig.hidden.includes(id);
-      const isDefault = tabConfig.defaultTab === id;
-
-      const row = document.createElement('div');
-      row.draggable = true;
-      row.dataset.tabId = id;
-      row.style.display = 'flex';
-      row.style.alignItems = 'center';
-      row.style.gap = '12px';
-      row.style.padding = '12px 14px';
-      row.style.marginBottom = '8px';
-      row.style.borderRadius = '12px';
-      row.style.border = `1px solid ${T.chipBorder}`;
-      row.style.backgroundColor = isHidden ? T.chipBgHidden : T.chipBg;
-      row.style.cursor = 'grab';
-      row.style.transition = 'border-color 0.15s';
-      row.style.opacity = isHidden ? '0.55' : '1';
-
-      const handle = document.createElement('span');
-      handle.textContent = '⠿';
-      handle.style.fontSize = '18px';
-      handle.style.color = T.textFaint;
-      handle.style.cursor = 'grab';
-      row.appendChild(handle);
-
-      const label = document.createElement('span');
-      label.textContent = def.label;
-      label.style.flex = '1';
-      label.style.fontSize = '15px';
-      label.style.fontWeight = '600';
-      label.style.color = T.textPrimary;
-      row.appendChild(label);
-
-      const defBtn = document.createElement('button');
-      defBtn.textContent = isDefault ? '★ Default' : 'Set default';
-      defBtn.style.fontSize = '12px';
-      defBtn.style.fontWeight = '600';
-      defBtn.style.padding = '5px 10px';
-      defBtn.style.borderRadius = '6px';
-      defBtn.style.border = 'none';
-      defBtn.style.cursor = isHidden ? 'not-allowed' : 'pointer';
-      defBtn.style.fontFamily = 'inherit';
-      defBtn.style.backgroundColor = isDefault ? 'rgba(59, 130, 246, 1)' : T.btnNeutralBg;
-      defBtn.style.color = isDefault ? '#fff' : T.textSecondary;
-      defBtn.style.opacity = isHidden ? '0.4' : '1';
-      defBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (isHidden) return;
-        tabConfig.defaultTab = id;
-        saveTabConfig(tabConfig);
-        renderSettingsPanel();
-      });
-      row.appendChild(defBtn);
-
-      const hideBtn = document.createElement('button');
-      hideBtn.textContent = isHidden ? 'Show' : 'Hide';
-      hideBtn.style.fontSize = '12px';
-      hideBtn.style.fontWeight = '600';
-      hideBtn.style.padding = '5px 10px';
-      hideBtn.style.borderRadius = '6px';
-      hideBtn.style.border = 'none';
-      hideBtn.style.cursor = 'pointer';
-      hideBtn.style.fontFamily = 'inherit';
-      hideBtn.style.backgroundColor = T.btnNeutralBg;
-      hideBtn.style.color = T.textSecondary;
-      hideBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (isHidden) {
-          tabConfig.hidden = tabConfig.hidden.filter(h => h !== id);
-        } else {
-          const visibleCount = tabConfig.order.filter(o => !tabConfig.hidden.includes(o)).length;
-          if (visibleCount <= 1) return; // keep at least one visible tab
-          tabConfig.hidden = [...tabConfig.hidden, id];
-          if (tabConfig.defaultTab === id) {
-            tabConfig.defaultTab = tabConfig.order.find(o => !tabConfig.hidden.includes(o)) || 'setup';
-          }
-        }
-        saveTabConfig(tabConfig);
-        renderSettingsPanel();
-        renderTabBar();
-      });
-      row.appendChild(hideBtn);
-
-      row.addEventListener('dragstart', (e) => {
-        dragSrcId = id;
-        row.style.opacity = '0.4';
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-      });
-      row.addEventListener('dragend', () => {
-        row.style.opacity = isHidden ? '0.55' : '1';
-      });
-      row.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-        row.style.borderColor = 'rgba(59, 130, 246, 0.8)';
-      });
-      row.addEventListener('dragleave', () => {
-        row.style.borderColor = T.chipBorder;
-      });
-      row.addEventListener('drop', (e) => {
-        e.preventDefault();
-        row.style.borderColor = T.chipBorder;
-        if (!dragSrcId || dragSrcId === id) return;
-        const order = [...tabConfig.order];
-        const from = order.indexOf(dragSrcId);
-        const to = order.indexOf(id);
-        if (from < 0 || to < 0) return;
-        order.splice(from, 1);
-        order.splice(to, 0, dragSrcId);
-        tabConfig.order = order;
-        saveTabConfig(tabConfig);
-        renderSettingsPanel();
-        renderTabBar();
-      });
-
-      wrap.appendChild(row);
-    });
-
-    const reset = document.createElement('button');
-    reset.textContent = 'Reset to defaults';
-    reset.style.marginTop = '8px';
-    reset.style.fontSize = '13px';
-    reset.style.fontWeight = '600';
-    reset.style.padding = '8px 14px';
-    reset.style.borderRadius = '8px';
-    reset.style.border = `1px solid ${T.chipBorder}`;
-    reset.style.backgroundColor = 'transparent';
-    reset.style.color = T.textSecondary;
-    reset.style.cursor = 'pointer';
-    reset.style.fontFamily = 'inherit';
-    reset.addEventListener('click', () => {
-      const d = defaultTabConfig();
-      tabConfig.order = d.order;
-      tabConfig.hidden = d.hidden;
-      tabConfig.defaultTab = d.defaultTab;
-      saveTabConfig(tabConfig);
-      renderSettingsPanel();
-      renderTabBar();
-    });
-    wrap.appendChild(reset);
   };
 
   // ─── Input + keyboard wiring ───────────────────────────────
@@ -5242,7 +5034,8 @@ function buildSpotlight(tabConfig: TabConfig) {
     if (target.startsWith('tool:')) activateTab('tools').then(() => { toolView = target.slice(5); performSearch(); });
     else if (target.startsWith('tab:')) activateTab(target.slice(4));
     else activateTab(tabConfig.defaultTab);
-  } else if (reopenSettingsAfterBuild) { reopenSettingsAfterBuild = false; activateTab('__settings'); }
+  } else if (SPOTLIGHT_PAGE && pageTool) { const t = pageTool; activateTab('tools').then(() => { toolView = t; performSearch(); }); }
+  else if (SPOTLIGHT_PAGE && pageTab) { activateTab(pageTab); }
   else activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab);
   searchInput.focus();
 }
@@ -5479,8 +5272,12 @@ function injectSidebar() {
         return false;
       }
 
-      // ⌘+Space (Mac) / Alt+Space (Windows) to open spotlight.
-      if (event.code === 'Space' && (event.metaKey || event.altKey) && !event.ctrlKey && !event.shiftKey) {
+      // Option+Space (Mac) / Win+Space (Windows) to open spotlight.
+      const isMacOS = /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+      const spaceModifier = isMacOS
+        ? (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey)   // Mac: Option + Space
+        : (event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey);  // Windows: Win + Space
+      if (event.code === 'Space' && spaceModifier) {
         event.preventDefault();
         event.stopPropagation();
         showSpotlightSearch();

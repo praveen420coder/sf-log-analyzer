@@ -16,6 +16,23 @@ interface SalesforceData {
 
 const chromeAPI = (globalThis as any).chrome;
 
+// Salesforce API version used for every REST / Tooling / SOAP call. Driven by the
+// user's Settings → Salesforce → API version (sf_spotlight_prefs.apiVersion), so
+// all endpoints below build their URLs with `v${AV}` instead of a hardcoded one.
+let AV = '60.0';
+try {
+  chromeAPI?.storage?.local?.get(['sf_spotlight_prefs'], (r: any) => {
+    const v = r?.sf_spotlight_prefs?.apiVersion;
+    if (typeof v === 'string' && /^\d+\.\d+$/.test(v)) AV = v;
+  });
+  chromeAPI?.storage?.onChanged?.addListener((changes: any, area: string) => {
+    if (area === 'local' && changes?.sf_spotlight_prefs?.newValue) {
+      const v = changes.sf_spotlight_prefs.newValue.apiVersion;
+      if (typeof v === 'string' && /^\d+\.\d+$/.test(v)) AV = v;
+    }
+  });
+} catch { /* storage unavailable */ }
+
 // In-flight SOQL queries, keyed by requestId, so they can be cancelled.
 const soqlAborters: Record<string, AbortController> = {};
 
@@ -353,7 +370,7 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'FETCH_USER_INFO') {
-        fetch(`${request.instanceUrl}/services/data/v65.0/chatter/users/me`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/chatter/users/me`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
@@ -370,7 +387,7 @@ if (chromeRuntime) {
 
       if (request.type === 'FETCH_LOGS') {
         const query = 'SELECT Id, LogLength, Operation, Status, StartTime FROM ApexLog ORDER BY StartTime DESC LIMIT 100';
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent(query)}`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
@@ -387,7 +404,7 @@ if (chromeRuntime) {
 
       if (request.type === 'APEX_RUN_TESTS') {
         // POST tooling/runTestsAsynchronous → returns the AsyncApexJob id (a JSON string).
-        fetch(`${request.instanceUrl}/services/data/v59.0/tooling/runTestsAsynchronous/`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/runTestsAsynchronous/`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify(request.payload),
@@ -398,9 +415,31 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'REST_EXPLORE') {
+        // Raw REST call for the REST Explorer tool. endpoint is a path like
+        // /services/data/v${AV}/limits; method + optional JSON body.
+        let endpoint = String(request.endpoint || '').trim();
+        if (endpoint && !endpoint.startsWith('/')) endpoint = '/' + endpoint;
+        const method = String(request.method || 'GET').toUpperCase();
+        const headers: Record<string, string> = { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' };
+        const init: any = { method, headers };
+        if (method !== 'GET' && method !== 'DELETE' && request.body) {
+          headers['Content-Type'] = 'application/json';
+          init.body = request.body;
+        }
+        const start = Date.now();
+        fetch(`${request.instanceUrl}${endpoint}`, init)
+          .then((res) => res.text().then((text) => sendResponse({
+            success: true,
+            data: { status: res.status, statusText: res.statusText, ok: res.ok, body: text, durationMs: Date.now() - start },
+          })))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'METADATA_QUERY') {
         const base = request.tooling ? 'tooling/query' : 'query';
-        fetch(`${request.instanceUrl}/services/data/v59.0/${base}/?q=${encodeURIComponent(request.query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/${base}/?q=${encodeURIComponent(request.query)}`, {
           headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' },
         })
           .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 200) || 'Unknown error'}`); })))
@@ -412,7 +451,7 @@ if (chromeRuntime) {
       if (request.type === 'GET_DEBUG_LOGS') {
         const where = request.userId ? ` WHERE LogUserId = '${request.userId}'` : '';
         const query = `SELECT Id, LogLength, Operation, Status, StartTime, DurationMilliseconds, Request, LogUser.Name FROM ApexLog${where} ORDER BY StartTime DESC LIMIT 100`;
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent(query)}`, {
           headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' },
         })
           .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 100) || 'Unknown error'}`); })))
@@ -422,7 +461,7 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'DELETE_APEX_LOG') {
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/ApexLog/${request.logId}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/ApexLog/${request.logId}`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${request.sessionId}` },
         })
@@ -432,7 +471,7 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'FETCH_LOG_BODY') {
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/ApexLog/${request.logId}/Body`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/ApexLog/${request.logId}/Body`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`
           }
@@ -449,7 +488,7 @@ if (chromeRuntime) {
       if (request.type === 'CHECK_DEBUG_SESSION') {
         // Check for active TraceFlag for the current user
         const query = `SELECT Id, ExpirationDate, DebugLevelId, TracedEntityId FROM TraceFlag WHERE TracedEntityId = '${request.userId}' AND ExpirationDate > ${new Date().toISOString()} ORDER BY ExpirationDate DESC LIMIT 1`;
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent(query)}`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
@@ -469,7 +508,7 @@ if (chromeRuntime) {
 
       if (request.type === 'CREATE_DEBUG_SESSION') {
         // Step 1: Check if a DebugLevel exists, or create one
-        const checkDebugLevel = fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent("SELECT Id FROM DebugLevel WHERE DeveloperName = 'SF_LOG_ANALYZER_DEBUG' LIMIT 1")}`, {
+        const checkDebugLevel = fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent("SELECT Id FROM DebugLevel WHERE DeveloperName = 'SF_LOG_ANALYZER_DEBUG' LIMIT 1")}`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
@@ -481,7 +520,7 @@ if (chromeRuntime) {
             return data.records[0].Id;
           }
           // Create a new DebugLevel
-          return fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel`, {
+          return fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/DebugLevel`, {
             method: 'POST',
             headers: { 
               'Authorization': `Bearer ${request.sessionId}`,
@@ -508,7 +547,7 @@ if (chromeRuntime) {
         checkDebugLevel
           .then(debugLevelId => {
             const expirationDate = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-            return fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag`, {
+            return fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/TraceFlag`, {
               method: 'POST',
               headers: { 
                 'Authorization': `Bearer ${request.sessionId}`,
@@ -533,7 +572,7 @@ if (chromeRuntime) {
 
       if (request.type === 'DELETE_DEBUG_SESSION') {
         // Delete the TraceFlag to stop the debug session
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag/${request.traceFlagId}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/TraceFlag/${request.traceFlagId}`, {
           method: 'DELETE',
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`
@@ -557,7 +596,7 @@ if (chromeRuntime) {
         // Use Bulk API v2 for efficient mass deletion
         // Step 1: Fetch all log IDs
         const query = 'SELECT Id FROM ApexLog';
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query/?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent(query)}`, {
           headers: { 
             'Authorization': `Bearer ${request.sessionId}`,
             'Accept': 'application/json'
@@ -575,7 +614,7 @@ if (chromeRuntime) {
           const ids = data.records.map((r: any) => r.Id);
           
           // Step 2: Create Bulk API v2 delete job
-          return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest`, {
+          return fetch(`${request.instanceUrl}/services/data/v${AV}/jobs/ingest`, {
             method: 'POST',
             headers: { 
               'Authorization': `Bearer ${request.sessionId}`,
@@ -595,7 +634,7 @@ if (chromeRuntime) {
             // Step 3: Upload CSV data with IDs to delete
             const csvData = 'Id\n' + ids.join('\n');
             
-            return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest/${job.id}/batches`, {
+            return fetch(`${request.instanceUrl}/services/data/v${AV}/jobs/ingest/${job.id}/batches`, {
               method: 'PUT',
               headers: { 
                 'Authorization': `Bearer ${request.sessionId}`,
@@ -613,7 +652,7 @@ if (chromeRuntime) {
             })
             .then(job => {
               // Step 4: Close the job to start processing
-              return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest/${job.id}`, {
+              return fetch(`${request.instanceUrl}/services/data/v${AV}/jobs/ingest/${job.id}`, {
                 method: 'PATCH',
                 headers: { 
                   'Authorization': `Bearer ${request.sessionId}`,
@@ -634,7 +673,7 @@ if (chromeRuntime) {
                 throw new Error('Bulk delete job timed out');
               }
               
-              return fetch(`${request.instanceUrl}/services/data/v58.0/jobs/ingest/${jobId}`, {
+              return fetch(`${request.instanceUrl}/services/data/v${AV}/jobs/ingest/${jobId}`, {
                 headers: { 
                   'Authorization': `Bearer ${request.sessionId}`,
                   'Accept': 'application/json'
@@ -687,7 +726,7 @@ if (chromeRuntime) {
           Workflow: request.settings.Workflow,
         };
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/DebugLevel`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
@@ -707,7 +746,7 @@ if (chromeRuntime) {
       if (request.type === 'FIND_DEBUG_LEVEL_BY_NAME') {
         const query = `SELECT Id, DeveloperName, MasterLabel, ApexCode, ApexProfiling, Callout, Database, System, Validation, Visualforce, Workflow FROM DebugLevel WHERE DeveloperName = '${request.developerName}' LIMIT 1`;
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query?q=${encodeURIComponent(query)}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -733,7 +772,7 @@ if (chromeRuntime) {
           Workflow: request.settings.Workflow,
         };
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel/${request.debugLevelId}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/DebugLevel/${request.debugLevelId}`, {
           method: 'PATCH',
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
@@ -764,7 +803,7 @@ if (chromeRuntime) {
           LogType: 'USER_DEBUG',
         };
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/TraceFlag`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
@@ -787,7 +826,7 @@ if (chromeRuntime) {
           ExpirationDate: request.expirationDate,
         };
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/TraceFlag/${request.traceFlagId}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/TraceFlag/${request.traceFlagId}`, {
           method: 'PATCH',
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
@@ -813,7 +852,7 @@ if (chromeRuntime) {
         const now = new Date().toISOString();
         const query = `SELECT Id, TracedEntityId, DebugLevelId, StartDate, ExpirationDate, LogType, TracedEntity.Name, DebugLevel.DeveloperName FROM TraceFlag WHERE ExpirationDate > ${now} ORDER BY ExpirationDate DESC`;
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/query?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query?q=${encodeURIComponent(query)}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -830,7 +869,7 @@ if (chromeRuntime) {
       if (request.type === 'GET_ALL_ACTIVE_USERS') {
         const query = `SELECT Id, Name, Username, Email FROM User WHERE IsActive = true ORDER BY Name LIMIT 100`;
 
-        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(query)}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -847,9 +886,16 @@ if (chromeRuntime) {
       if (request.type === 'GET_ALL_FLOWS') {
         // FlowDefinitionView lists every flow/process in the org and exposes the
         // version ids needed to open the flow in Flow Builder.
-        const query = `SELECT DurableId, ApiName, Label, ProcessType, IsActive, VersionNumber, ManageableState, NamespacePrefix, ActiveVersionId, LatestVersionId FROM FlowDefinitionView ORDER BY Label LIMIT 500`;
+        //
+        // Optional request.scope narrows by manageability so the Flow Manager can
+        // load unmanaged flows first and only fetch installed-package (managed)
+        // flows on demand. We filter on ManageableState (NOT NamespacePrefix,
+        // which would wrongly hide local metadata in namespaced orgs).
+        const flowScope = request.scope === 'unmanaged' ? ` WHERE ManageableState = 'unmanaged'`
+          : request.scope === 'managed' ? ` WHERE ManageableState != 'unmanaged'` : '';
+        const query = `SELECT DurableId, ApiName, Label, ProcessType, IsActive, VersionNumber, ManageableState, NamespacePrefix, ActiveVersionId, LatestVersionId FROM FlowDefinitionView${flowScope} ORDER BY Label LIMIT 500`;
 
-        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(query)}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -863,6 +909,113 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'GET_ALL_FLOW_VERSIONS') {
+        // Every version of every flow in ONE query (paged), so the Flow Manager
+        // can show version counts / latest version for all flows without an N+1
+        // per-flow fetch. Records carry the real DefinitionId, which the caller
+        // joins to FlowDefinitionView rows (directly for unmanaged flows, or via
+        // ActiveVersionId / LatestVersionId → Flow.Id for managed ones).
+        // request.scope mirrors GET_ALL_FLOWS so version fetches stay in step with
+        // the flow fetch (unmanaged first, managed only on demand).
+        const verScope = request.scope === 'unmanaged' ? ` WHERE ManageableState = 'unmanaged'`
+          : request.scope === 'managed' ? ` WHERE ManageableState != 'unmanaged'` : '';
+        const query = `SELECT Id, DefinitionId, VersionNumber, Status, MasterLabel, Description, ProcessType, ApiVersion, LastModifiedDate, LastModifiedBy.Name FROM Flow${verScope} ORDER BY DefinitionId, VersionNumber DESC`;
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const all: any[] = [];
+        const pull = (url: string): Promise<void> =>
+          fetch(url, { headers })
+            .then(res => res.ok ? res.json() : res.text().then(text => { throw new Error(`HTTP ${res.status}: ${text.substring(0, 200) || 'Unknown error'}`); }))
+            .then((data) => {
+              if (data.records) all.push(...data.records);
+              // Tooling paginates at 2000 rows; follow nextRecordsUrl until done.
+              if (data.nextRecordsUrl && !data.done) return pull(`${request.instanceUrl}${data.nextRecordsUrl}`);
+              return undefined;
+            });
+        pull(`${request.instanceUrl}/services/data/v${AV}/tooling/query?q=${encodeURIComponent(query)}`)
+          .then(() => sendResponse({ success: true, data: all }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'FLOW_SET_ACTIVE_VERSION') {
+        // Activate / deactivate a flow by PATCHing the FlowDefinition's metadata.
+        // activeVersionNumber = N activates version N; 0 deactivates the flow.
+        // request.definitionId is the FlowDefinition Id (FlowDefinitionView.DurableId).
+        const version = Number(request.versionNumber) || 0;
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/FlowDefinition/${encodeURIComponent(request.definitionId)}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Metadata: { activeVersionNumber: version } }),
+        })
+          .then(async (res) => {
+            // A successful PATCH returns 204 No Content (empty body).
+            if (res.ok) { sendResponse({ success: true, activeVersionNumber: version }); return; }
+            const text = await res.text();
+            let msg = '';
+            try { const j = JSON.parse(text); const e = Array.isArray(j) ? j[0] : j; msg = e?.message || ''; } catch { /* keep raw */ }
+            sendResponse({ success: false, error: msg || `HTTP ${res.status}: ${text.substring(0, 200) || 'Unknown error'}` });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'GET_VALIDATION_RULES') {
+        // Every validation rule in the org (paged). The Tooling ValidationRule
+        // object exposes Active plus the owning object via the EntityDefinition
+        // relationship. request.scope narrows by manageability (ManageableState,
+        // NOT NamespacePrefix — namespaced-org gotcha) so managed rules are only
+        // fetched on demand.
+        const vrScope = request.scope === 'unmanaged' ? ` WHERE ManageableState = 'unmanaged'`
+          : request.scope === 'managed' ? ` WHERE ManageableState != 'unmanaged'` : '';
+        const query = `SELECT Id, ValidationName, Active, Description, ErrorMessage, ErrorDisplayField, NamespacePrefix, ManageableState, EntityDefinition.QualifiedApiName, EntityDefinition.Label FROM ValidationRule${vrScope} ORDER BY ValidationName`;
+        const headers = { 'Authorization': `Bearer ${request.sessionId}` };
+        const all: any[] = [];
+        const pull = (url: string): Promise<void> =>
+          fetch(url, { headers })
+            .then(res => res.ok ? res.json() : res.text().then(text => { throw new Error(`HTTP ${res.status}: ${text.substring(0, 200) || 'Unknown error'}`); }))
+            .then((data) => {
+              if (data.records) all.push(...data.records);
+              if (data.nextRecordsUrl && !data.done) return pull(`${request.instanceUrl}${data.nextRecordsUrl}`);
+              return undefined;
+            });
+        pull(`${request.instanceUrl}/services/data/v${AV}/tooling/query?q=${encodeURIComponent(query)}`)
+          .then(() => sendResponse({ success: true, data: all }))
+          .catch(err => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      if (request.type === 'SET_VALIDATION_RULE_ACTIVE') {
+        // Activate / deactivate a validation rule. The only reliable Tooling path
+        // is a PATCH of the full Metadata, so we read-modify-write: GET the rule's
+        // current Metadata, flip `active`, then PATCH it back — this preserves the
+        // formula, error message and display field.
+        const base = `${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/ValidationRule/${encodeURIComponent(request.ruleId)}`;
+        const active = request.active === true;
+        const authHeaders = { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json' };
+        const failFrom = async (res: Response) => {
+          const text = await res.text();
+          let msg = '';
+          try { const j = JSON.parse(text); const e = Array.isArray(j) ? j[0] : j; msg = e?.message || ''; } catch { /* keep raw */ }
+          return msg || `HTTP ${res.status}: ${text.substring(0, 200) || 'Unknown error'}`;
+        };
+        fetch(base, { headers: { 'Authorization': `Bearer ${request.sessionId}` } })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(await failFrom(res));
+            const rec = await res.json();
+            const metadata = rec?.Metadata || {};
+            metadata.active = active;
+            const patch = await fetch(base, { method: 'PATCH', headers: authHeaders, body: JSON.stringify({ Metadata: metadata }) });
+            if (patch.ok) { sendResponse({ success: true, active }); return; }
+            sendResponse({ success: false, error: await failFrom(patch) });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
       if (request.type === 'GET_ALL_APPS') {
         // AppMenuItem.StartUrl for Lightning apps is the generic /one/one.app
         // launcher URL, so every app lands on the default home. Instead we pull
@@ -870,7 +1023,7 @@ if (chromeRuntime) {
         // TabDefinition (its Url is a real, redirectable nav target) for tabs.
         const headers = { 'Authorization': `Bearer ${request.sessionId}` };
         const q = (soql: string) =>
-          fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, { headers })
+          fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(soql)}`, { headers })
             .then(res => (res.ok ? res.json() : null))
             .then(data => (data?.records || []))
             .catch(() => []);
@@ -924,7 +1077,7 @@ if (chromeRuntime) {
           return true;
         };
 
-        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(query)}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -1265,7 +1418,7 @@ if (chromeRuntime) {
         // /limits returns every org limit as { Max, Remaining } — covers both API
         // usage (DailyApiRequests, etc.) and storage (DataStorageMB, FileStorageMB).
         const headers = { 'Authorization': `Bearer ${request.sessionId}` };
-        fetch(`${request.instanceUrl}/services/data/v60.0/limits`, { headers })
+        fetch(`${request.instanceUrl}/services/data/v${AV}/limits`, { headers })
           .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 120)}`); })))
           .then((data) => sendResponse({ success: true, data }))
           .catch((err) => sendResponse({ success: false, error: err.message }));
@@ -1276,7 +1429,7 @@ if (chromeRuntime) {
         // Tooling SOQL returns LightningComponentResource.Source inline, so one
         // query yields every file (html/js/css/js-meta.xml) for the bundle.
         const q = `SELECT Id, FilePath, Format, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${request.bundleId}'`;
-        fetch(`${request.instanceUrl}/services/data/v60.0/tooling/query/?q=${encodeURIComponent(q)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent(q)}`, {
           headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Accept': 'application/json' },
         })
           .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(`HTTP ${res.status}: ${t.substring(0, 200) || 'Unknown error'}`); })))
@@ -1439,7 +1592,7 @@ if (chromeRuntime) {
           toMetXml(md) +
           `</met:metadata></met:createMetadata></soapenv:Body></soapenv:Envelope>`;
 
-        fetch(`${request.instanceUrl}/services/Soap/m/60.0`, {
+        fetch(`${request.instanceUrl}/services/Soap/m/${AV}`, {
           method: 'POST',
           headers: { 'Content-Type': 'text/xml; charset=UTF-8', 'SOAPAction': '""' },
           body: envelope,
@@ -1465,7 +1618,7 @@ if (chromeRuntime) {
         // objects too, e.g. "Account.My_Field__c"). NOTE: API-created fields have
         // no FLS for anyone except admins with "Modify All Data" — the caller is
         // expected to follow up with GRANT_FIELD_PERMISSIONS.
-        fetch(`${request.instanceUrl}/services/data/v60.0/tooling/sobjects/CustomField`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/CustomField`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${request.sessionId}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ FullName: request.fullName, Metadata: request.metadata }),
@@ -1517,7 +1670,7 @@ if (chromeRuntime) {
           `<soapenv:Body><apex:executeAnonymous><apex:String>${esc(request.apexBody)}</apex:String></apex:executeAnonymous></soapenv:Body>` +
           `</soapenv:Envelope>`;
 
-        fetch(`${request.instanceUrl}/services/Soap/s/60.0`, {
+        fetch(`${request.instanceUrl}/services/Soap/s/${AV}`, {
           method: 'POST',
           headers: { 'Content-Type': 'text/xml; charset=UTF-8', 'SOAPAction': '""' },
           body: envelope,
@@ -1555,7 +1708,7 @@ if (chromeRuntime) {
         // so one query covers both profiles and standalone permission sets.
         // Permission set GROUPS are excluded — FLS can't be written to them.
         const q = `SELECT Id, Label, Name, IsOwnedByProfile, Profile.Name FROM PermissionSet WHERE Type != 'Group' ORDER BY IsOwnedByProfile DESC, Label`;
-        fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(q)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(q)}`, {
           headers: { 'Authorization': `Bearer ${request.sessionId}` },
         })
           .then((res) => (res.ok ? res.json() : res.text().then((t) => { throw new Error(sfErrorText(res.status, t)); })))
@@ -1671,7 +1824,7 @@ if (chromeRuntime) {
         // Permission sets, permission set groups, and profiles in one shot.
         const headers = { 'Authorization': `Bearer ${request.sessionId}` };
         const q = (soql: string) =>
-          fetch(`${request.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, { headers })
+          fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(soql)}`, { headers })
             .then(res => (res.ok ? res.json() : null))
             .then(data => (data?.records || []))
             .catch(() => []);
@@ -1697,7 +1850,7 @@ if (chromeRuntime) {
       if (request.type === 'SEARCH_USERS') {
         const query = `SELECT Id, Name, Username, Email FROM User WHERE IsActive = true AND (Name LIKE '%${request.searchTerm}%' OR Username LIKE '%${request.searchTerm}%' OR Email LIKE '%${request.searchTerm}%') ORDER BY Name LIMIT 10`;
 
-        fetch(`${request.instanceUrl}/services/data/v58.0/query?q=${encodeURIComponent(query)}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/query?q=${encodeURIComponent(query)}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -1712,7 +1865,7 @@ if (chromeRuntime) {
       }
 
       if (request.type === 'GET_DEBUG_LEVEL') {
-        fetch(`${request.instanceUrl}/services/data/v58.0/tooling/sobjects/DebugLevel/${request.debugLevelId}`, {
+        fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/sobjects/DebugLevel/${request.debugLevelId}`, {
           headers: {
             'Authorization': `Bearer ${request.sessionId}`,
           },
@@ -1790,6 +1943,7 @@ const SF_MENU_TABS: [string, string][] = [
 const SF_MENU_TOOLS: [string, string][] = [
   ['tool:export', '📤 Export Data'], ['tool:querybuilder', '🧱 Query Builder'],
   ['tool:sampledata', '🧪 Sample Data'], ['tool:whereused', '🔎 Where Used'],
+  ['tool:restexplorer', '🧪 REST Explorer (Beta)'],
   ['tool:objectmanager', '🛠️ Object Manager'], ['tool:automationmap', '🧭 Automation Map'],
   ['tool:executeanonymous', '⚡ Execute Anonymous'], ['tool:permcompare', '🔐 Permission Comparison'],
   ['tool:accessmap', '🗺️ Access Explorer'], ['tool:dataimport', '⬆️ Data Import'],

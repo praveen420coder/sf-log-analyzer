@@ -1,12 +1,10 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import Header from './components/LogKit/Header';
 import DashboardView from './components/LogKit/DashboardView';
-import SettingsView from './components/LogKit/SettingsView';
 import SidebarTrigger from './components/LogKit/SidebarTrigger';
 import Toast from './components/Toast';
 import DebugSessionControl from './components/LogKit/DebugSessionControl';
 import { useExtensionLogAPI } from './hooks/useExtensionLogAPI';
-import { useSettings } from './hooks/useSettings';
 import type { Log } from './types';
 
 export default function App() {
@@ -25,7 +23,6 @@ export default function App() {
     deleteAllLogs, isDeletingAllLogs
   } = useExtensionLogAPI();
 
-  const { settings, updateSettings, resetSettings } = useSettings();
 
   const isConnected = !!(sessionId && instanceUrl);
 
@@ -121,7 +118,17 @@ export default function App() {
     }
   };
 
+  // This log panel is always an overlay, so Settings opens the FULL spotlight
+  // page (tab strip + footer) in its own browser tab, landed on the Settings tab.
+  const openSettingsPage = () => {
+    const cr = (globalThis as any).chrome?.runtime;
+    if (!cr?.getURL) return;
+    const url = `${cr.getURL('spotlight.html')}?host=${encodeURIComponent(currentHostname || '')}&tab=__settings`;
+    if (cr.sendMessage) cr.sendMessage({ type: 'OPEN_TAB', url });
+    else window.open(url, '_blank');
+  };
   const handleNavigate = (newView: 'dashboard' | 'detail' | 'settings') => {
+    if (newView === 'settings') { openSettingsPage(); return; }
     if (newView !== 'detail') setView(newView);
   };
 
@@ -185,12 +192,6 @@ export default function App() {
                 onOpenDebugSessionControl={() => setIsDebugSessionControlOpen(true)}
                 debugLive={debugLive}
                 onToggleDebugLive={toggleDebugLive}
-              />
-            ) : view === 'settings' ? (
-              <SettingsView
-                settings={settings}
-                onSettingsChange={updateSettings}
-                onResetSettings={resetSettings}
               />
             ) : null}
           </main>

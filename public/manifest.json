@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SF Spotlight",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "description": "Quick Navigation to Salesforce Setting and Records and Analyze Salesforce system logs",
   "icons": {
     "16": "icons/Spotlite-Icon-16.png",
