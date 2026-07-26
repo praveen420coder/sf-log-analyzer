@@ -129,13 +129,16 @@ export interface Usage {
 }
 export const DEFAULT_USAGE: Usage = { soql: 0, debugLogs: 0, rulesUpdated: 0, apexTests: 0 };
 
-// Increment a usage counter (read-modify-write). Fire-and-forget from anywhere.
+// Increment a usage counter (read-modify-write). Serialized through a promise
+// chain so rapid successive bumps don't clobber each other's read.
+let usageChain: Promise<void> = Promise.resolve();
 export function bumpUsage(key: keyof Usage, by = 1): void {
-  get<Partial<Usage>>(KEYS.usage, {}).then((u) => {
+  usageChain = usageChain.then(async () => {
+    const u = await get<Partial<Usage>>(KEYS.usage, {});
     const cur = { ...DEFAULT_USAGE, ...u };
     cur[key] = (cur[key] || 0) + by;
-    set(KEYS.usage, cur);
-  });
+    await set(KEYS.usage, cur);
+  }).catch(() => { /* keep the chain alive */ });
 }
 
 export interface VisitedOrg { host: string; instanceUrl: string; label: string; user?: string; ts: number }

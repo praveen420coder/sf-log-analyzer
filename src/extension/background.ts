@@ -465,6 +465,24 @@ if (chromeRuntime) {
         return true;
       }
 
+      if (request.type === 'FETCH_USER_PHOTO') {
+        // Salesforce profile photos need the session, and the panel is an
+        // extension-origin page — so fetch here (host_permissions) and return a
+        // data URL the <img> can render directly.
+        fetch(request.url, { headers: { 'Authorization': `Bearer ${request.sessionId}` } })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const buf = await res.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            const contentType = res.headers.get('content-type') || 'image/png';
+            sendResponse({ success: true, dataUrl: `data:${contentType};base64,${btoa(binary)}` });
+          })
+          .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+      }
+
       if (request.type === 'FETCH_LOGS') {
         const query = 'SELECT Id, LogLength, Operation, Status, StartTime FROM ApexLog ORDER BY StartTime DESC LIMIT 100';
         fetch(`${request.instanceUrl}/services/data/v${AV}/tooling/query/?q=${encodeURIComponent(query)}`, {

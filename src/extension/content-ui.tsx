@@ -45,7 +45,6 @@ import { renderCustomShortcutsInto, resolveShortcutUrl } from './features/custom
 
 import { loadVisitedOrgs, recordVisitedOrg } from './state/sessions';
 import { renderSessionSwitcherInto } from './features/sessionSwitcher';
-import { renderApiConsoleInto, type ApiConsoleHandle } from './features/apiConsole';
 import type { BundleInfo } from './features/componentInspector/detect';
 import type { LwcFile } from './features/componentInspector/viewer';
 
@@ -60,19 +59,19 @@ let currentMinimalView = false;
 // Spotlight popup opacity (0-100). Applied to the overlay popup only, never the
 // full-page tab. Driven by Settings → Appearance → Opacity.
 let currentPanelOpacity = 100;
+// Full-page tab: collapse the vertical tab sidebar to an icon-only rail.
+let fullPageSidebarCollapsed = false;
+const SIDEBAR_COLLAPSED_KEY = 'sf_spotlight_sidebar_collapsed';
+try { (globalThis as any).chrome?.storage?.local?.get([SIDEBAR_COLLAPSED_KEY], (r: any) => { fullPageSidebarCollapsed = r?.[SIDEBAR_COLLAPSED_KEY] === true; }); } catch { /* ignore */ }
 // Set by the right-click context menu to open Spotlight at a specific tab/tool.
 let pendingSpotlightTarget: string | null = null;
 
-// Live API-activity console handle; destroyed and rebuilt with the spotlight so
-// its background port doesn't leak across reopens.
-let apiConsoleHandle: ApiConsoleHandle | null = null;
 // Whether the Object Explorer icon is shown in the Salesforce global header.
 let objectExplorerEnabled = true;
 
 // Settings-driven behavior flags (Settings → Cache / History / Notification).
 let metadataCacheEnabled = true;   // reuse in-memory metadata caches
 let metadataCacheAutoUpdate = false; // refresh caches on each panel open
-let apiActivityConsoleEnabled = true; // show the footer API activity console
 
 // Apply the prefs bag to the live behavior flags + subsystems. Called at startup
 // and whenever sf_spotlight_prefs changes, so Settings toggles take effect.
@@ -80,7 +79,6 @@ function applyPrefs(p: Partial<Prefs>): void {
   const prefs = { ...DEFAULT_PREFS, ...(p || {}) };
   metadataCacheEnabled = prefs.cacheEnabled;
   metadataCacheAutoUpdate = prefs.cacheAutoUpdate;
-  apiActivityConsoleEnabled = prefs.notifSpinner;
   setToastEnabled(prefs.notifToast);
   setRecentsEnabled(prefs.historyEnabled);
   setRecentsLimit(prefs.historyLimit ? prefs.historyMax : 9999);
@@ -182,6 +180,26 @@ const ALL_SPOTLIGHT_TABS: SpotlightTab[] = [
 
 // Tabs that should start hidden (user can enable them from the ⚙ settings).
 const HIDDEN_BY_DEFAULT = ['apps'];
+
+// Curated full-page sidebar: a mix of key tabs and tool shortcuts. Only these
+// show in full-page mode (the other tabs are hidden there for now); tool entries
+// open the matching Tools-drawer view directly.
+const FULLPAGE_SIDEBAR: { kind: 'tab' | 'tool'; id: string; label: string; icon: string }[] = [
+  { kind: 'tab', id: 'home', label: 'Home', icon: '🏠' },
+  { kind: 'tab', id: 'tools', label: 'Apps & Tools', icon: '🛠️' },
+  { kind: 'tab', id: 'setup', label: 'Quick Access', icon: '🔧' },
+  { kind: 'tool', id: 'export', label: 'Query Editor', icon: '📝' },
+  { kind: 'tab', id: 'debug', label: 'Log Explorer', icon: '🐞' },
+  { kind: 'tab', id: 'apextests', label: 'Apex Tests', icon: '🧪' },
+  { kind: 'tab', id: 'access', label: 'Access Explorer', icon: '🗺️' },
+  { kind: 'tool', id: 'restexplorer', label: 'REST Console', icon: '🔌' },
+  { kind: 'tool', id: 'eventmonitor', label: 'Event Console', icon: '📡' },
+  { kind: 'tool', id: 'executeanonymous', label: 'Code Editor', icon: '⚡' },
+  { kind: 'tool', id: 'flowmanager', label: 'Flow Manager', icon: '🌊' },
+  { kind: 'tool', id: 'validationrules', label: 'Validation Rules', icon: '✅' },
+  { kind: 'tool', id: 'automationmap', label: 'Automation Map', icon: '🧭' },
+  { kind: 'tool', id: 'orglimits', label: 'Org Status', icon: '📈' },
+];
 
 interface TabConfig { order: string[]; hidden: string[]; defaultTab: string; }
 
@@ -299,6 +317,10 @@ let cachedObjects: any[] | null = null;
 let cachedSecurity: any[] | null = null;
 let cachedDebugLogs: any[] | null = null;
 let currentUserId: string | null = null;
+// Current logged-in user (chatter users/me) + their profile photo as a data URL,
+// cached across panel rebuilds. Shown in the full-page sidebar header.
+let currentUserInfo: any = null;
+let currentUserPhoto: string | null = null;
 
 // ─── Metadata Explorer catalog ───────────────────────────────────────────────
 // Each entry: a metadata type, its query (tooling or data API) and table columns.
@@ -2089,10 +2111,6 @@ function showSpotlightSearch() {
 }
 
 function buildSpotlight(tabConfig: TabConfig) {
-  // Tear down a prior API console (and its background port) before rebuilding.
-  apiConsoleHandle?.destroy();
-  apiConsoleHandle = null;
-
   // ─── Theme tokens (light / dark) ───────────────────────────
   const isDark = currentSpotlightTheme === 'dark';
   const fullPage = SPOTLIGHT_PAGE; // rendered as a standalone tab, not an overlay
@@ -2119,12 +2137,15 @@ function buildSpotlight(tabConfig: TabConfig) {
     iconStroke: isDark ? '#cbd5e1' : '#1f2937',
     scrollThumb: isDark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(31, 41, 55, 0.25)',
     scrollThumbHover: isDark ? 'rgba(148, 163, 184, 0.55)' : 'rgba(31, 41, 55, 0.45)',
-    accent: '#3b82f6',
+    accent: getTheme(isDark).accent,
     chipBorder: isDark ? 'rgba(148, 163, 184, 0.25)' : 'rgba(31, 41, 55, 0.12)',
     chipBg: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.35)',
     chipBgHidden: isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(31, 41, 55, 0.04)',
     btnNeutralBg: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(31, 41, 55, 0.08)',
   };
+  // Shared design palette — the SAME one the tool screens use (getTheme), so the
+  // panel chrome (modal, sidebar, footer, inputs) matches every feature exactly.
+  const G = getTheme(isDark);
 
   const spotlightContainer = document.createElement('div');
   spotlightContainer.id = 'sf-log-analyzer-spotlight-container';
@@ -2171,12 +2192,13 @@ function buildSpotlight(tabConfig: TabConfig) {
   const modal = document.createElement('div');
   modal.style.position = 'relative';
   modal.style.width = '100%';
-  modal.style.backgroundColor = isDark ? '#0f172a' : '#ffffff';
+  modal.style.backgroundColor = G.bg;
   modal.style.overflow = 'hidden';
   modal.style.zIndex = '2';
   modal.style.pointerEvents = 'auto';
   if (fullPage) {
-    // Fill the whole tab.
+    // Fill the whole tab. Column layout: a top row (sidebar + content) above a
+    // full-width footer strip.
     modal.style.maxWidth = 'none';
     modal.style.height = '100vh';
     modal.style.display = 'flex';
@@ -2199,7 +2221,7 @@ function buildSpotlight(tabConfig: TabConfig) {
   inputContainer.style.display = 'flex';
   inputContainer.style.alignItems = 'center';
   inputContainer.style.padding = '24px 32px';
-  inputContainer.style.borderBottom = `1px solid ${T.divider}`;
+  inputContainer.style.borderBottom = `1px solid ${G.divider}`;
 
   const searchSvg = document.createElement('div');
   searchSvg.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="${T.iconStroke}" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>`;
@@ -2278,12 +2300,23 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   // Tabs (rendered dynamically from config)
   const tabsContainer = document.createElement('div');
-  tabsContainer.style.backgroundColor = T.surface;
-  tabsContainer.style.borderBottom = `1px solid ${T.divider}`;
-  tabsContainer.style.padding = '0 32px';
-  tabsContainer.style.gap = '28px';
+  tabsContainer.style.backgroundColor = G.side;
   tabsContainer.style.display = 'flex';
-  tabsContainer.style.alignItems = 'center';
+  if (fullPage) {
+    // Full-page tab: a vertical left sidebar of tabs.
+    tabsContainer.style.flexDirection = 'column';
+    tabsContainer.style.width = '208px';
+    tabsContainer.style.flexShrink = '0';
+    tabsContainer.style.borderRight = `1px solid ${G.divider}`;
+    tabsContainer.style.padding = '12px 10px';
+    tabsContainer.style.gap = '2px';
+    tabsContainer.style.overflowY = 'auto';
+  } else {
+    tabsContainer.style.borderBottom = `1px solid ${G.divider}`;
+    tabsContainer.style.padding = '0 32px';
+    tabsContainer.style.gap = '28px';
+    tabsContainer.style.alignItems = 'center';
+  }
 
   let activeTab = (SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab;
   // When opened via ?analyzeLog=<id>, the Log Explorer opens this log's analyzer immediately.
@@ -2354,9 +2387,9 @@ function buildSpotlight(tabConfig: TabConfig) {
   hintsBar.style.alignItems = 'center';
   hintsBar.style.justifyContent = 'space-between';
   hintsBar.style.gap = '16px';
-  hintsBar.style.padding = '12px 24px';
-  hintsBar.style.borderTop = `1px solid ${T.divider}`;
-  hintsBar.style.backgroundColor = T.surface;
+  hintsBar.style.padding = fullPage ? '5px 20px' : '12px 24px';
+  hintsBar.style.borderTop = `1px solid ${G.divider}`;
+  hintsBar.style.backgroundColor = G.side;
 
   // Brand (left) — clickable, opens the documentation site
   const brand = document.createElement('a');
@@ -2459,41 +2492,19 @@ function buildSpotlight(tabConfig: TabConfig) {
   reportLink.addEventListener('mouseout', () => { reportLink.style.color = T.textMuted; });
   hintsRight.appendChild(reportLink);
 
-  hintsBar.appendChild(brand);
+  // In full-page mode the brand moves to the bottom of the sidebar (below
+  // Settings); the overlay keeps it in the footer.
+  if (!fullPage) hintsBar.appendChild(brand);
 
   // Reloads the footer identity (greet + org badges) for the ACTIVE session —
   // assigned inside the full-page block, re-invoked by the session switcher.
   let refreshGreet: (() => void) | null = null;
 
-  // Full-page footer greets the logged-in user in a colourful badge.
+  // Full-page footer: org-context badges (edition · instance · API version · release).
   if (fullPage) {
     const isDark = currentSpotlightTheme === 'dark';
-    const greet = document.createElement('div');
-    Object.assign(greet.style, {
-      display: 'flex', alignItems: 'center', gap: '9px', marginLeft: '14px', padding: '3px 13px 3px 3px',
-      borderRadius: '999px', whiteSpace: 'nowrap', maxWidth: '340px', overflow: 'hidden', flexShrink: '0',
-      background: isDark ? 'linear-gradient(135deg, rgba(79,140,255,0.18), rgba(168,85,247,0.16))' : 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(168,85,247,0.10))',
-      border: `1px solid ${isDark ? 'rgba(129,140,248,0.40)' : 'rgba(99,102,241,0.30)'}`,
-    });
-    const avatar = document.createElement('div');
-    Object.assign(avatar.style, { width: '26px', height: '26px', borderRadius: '50%', flexShrink: '0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: '800', color: '#fff', background: 'linear-gradient(135deg, #6366f1, #a855f7)', boxShadow: '0 1px 5px rgba(99,102,241,0.5)' });
-    avatar.textContent = '…';
-    const txt = document.createElement('div');
-    Object.assign(txt.style, { display: 'flex', flexDirection: 'column', lineHeight: '1.2', overflow: 'hidden' });
-    const nm = document.createElement('span');
-    Object.assign(nm.style, { fontSize: '12px', fontWeight: '700', color: T.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis' });
-    nm.textContent = 'Loading…';
-    const em = document.createElement('span');
-    Object.assign(em.style, { fontSize: '10.5px', color: T.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', display: 'none' });
-    txt.appendChild(nm); txt.appendChild(em);
-    greet.appendChild(avatar); greet.appendChild(txt);
-    hintsBar.appendChild(greet);
-
-    const initialsOf = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || '').join('') || 'U';
-
-    // Org-context badges: edition · instance · API version · release.
     const badges = document.createElement('div');
-    Object.assign(badges.style, { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '10px', overflow: 'hidden', flexShrink: '1' });
+    Object.assign(badges.style, { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '14px', overflow: 'hidden', flexShrink: '1' });
     hintsBar.appendChild(badges);
     const mkBadge = (fg: string, bg: string, border: string) => {
       const b = document.createElement('span');
@@ -2508,20 +2519,10 @@ function buildSpotlight(tabConfig: TabConfig) {
     const bRel = mkBadge(isDark ? '#c4b5fd' : '#7c3aed', 'rgba(168,85,247,0.14)', 'rgba(168,85,247,0.35)');
 
     refreshGreet = () => {
-      nm.textContent = 'Loading…'; em.style.display = 'none'; avatar.textContent = '…';
       [bEd, bInst, bVer, bRel].forEach((b) => { b.style.display = 'none'; });
       getSfCredentials().then((creds: any) => {
-        if (!creds?.instanceUrl || !creds?.sessionId) { nm.textContent = 'Guest'; avatar.textContent = 'G'; return; }
+        if (!creds?.instanceUrl || !creds?.sessionId) return;
         const msg = { instanceUrl: creds.instanceUrl, sessionId: creds.sessionId };
-        (globalThis as any).chrome?.runtime?.sendMessage({ type: 'FETCH_USER_INFO', ...msg }, (r: any) => {
-          if (r?.success && r.data) {
-            const name = r.data.displayName || r.data.name || 'User';
-            const email = r.data.email || r.data.username || '';
-            nm.textContent = name;
-            avatar.textContent = initialsOf(name);
-            if (email) { em.textContent = email; em.style.display = ''; }
-          } else { nm.textContent = 'User'; avatar.textContent = 'U'; }
-        });
         (globalThis as any).chrome?.runtime?.sendMessage({ type: 'GET_ORG_INFO', ...msg }, (r: any) => {
           if (r?.success && r.data) {
             fillBadge(bEd, '🏛️', r.data.OrganizationType || '');
@@ -2569,16 +2570,25 @@ function buildSpotlight(tabConfig: TabConfig) {
 
   hintsBar.appendChild(hintsRight);
 
-  // Live API-activity console — transparency panel above the footer.
-  const apiConsoleWrap = document.createElement('div');
-  apiConsoleWrap.style.flexShrink = '0';
-  if (!minimal && apiActivityConsoleEnabled) apiConsoleHandle = renderApiConsoleInto(apiConsoleWrap, { isDark });
-
-  // Minimal view = search strip only: no tabs, no console, no footer, no tips.
-  if (!minimal) modal.appendChild(tabsContainer);   // tabs on top
-  modal.appendChild(inputContainer);
-  modal.appendChild(resultsContainer);
-  if (!minimal) { modal.appendChild(apiConsoleWrap); modal.appendChild(hintsBar); }
+  // Minimal view = search strip only: no tabs, no footer, no tips.
+  if (fullPage) {
+    // Top row = vertical tab sidebar + content column; footer spans full width below.
+    const topRow = document.createElement('div');
+    Object.assign(topRow.style, { display: 'flex', flex: '1', minHeight: '0' });
+    topRow.appendChild(tabsContainer);
+    const contentCol = document.createElement('div');
+    Object.assign(contentCol.style, { flex: '1', minWidth: '0', minHeight: '0', display: 'flex', flexDirection: 'column' });
+    contentCol.appendChild(inputContainer);
+    contentCol.appendChild(resultsContainer);
+    topRow.appendChild(contentCol);
+    modal.appendChild(topRow);
+    modal.appendChild(hintsBar);
+  } else {
+    if (!minimal) modal.appendChild(tabsContainer);   // tabs on top
+    modal.appendChild(inputContainer);
+    modal.appendChild(resultsContainer);
+    if (!minimal) modal.appendChild(hintsBar);
+  }
 
   modalContent.appendChild(backdrop);
   modalContent.appendChild(modal);
@@ -2839,6 +2849,33 @@ function buildSpotlight(tabConfig: TabConfig) {
     } catch { /* ignore */ }
   };
 
+  // Fetch the current user (chatter users/me) + their profile photo (as a data
+  // URL via the background), caching both. Calls cb once info is available.
+  const loadCurrentUser = async (cb: () => void): Promise<void> => {
+    if (currentUserInfo) { cb(); return; }
+    try {
+      const creds = await getSfCredentials();
+      if (!creds?.sessionId || !creds?.instanceUrl) return;
+      const info = await new Promise<any>((resolve) => {
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'FETCH_USER_INFO', instanceUrl: creds.instanceUrl, sessionId: creds.sessionId },
+          (resp: any) => resolve(resp?.success ? resp.data : null),
+        );
+      });
+      if (!info) return;
+      currentUserInfo = info;
+      if (!currentUserId) currentUserId = info.id || null;
+      cb();
+      const photoUrl = info?.photo?.fullPhotoUrl || info?.photo?.smallPhotoUrl;
+      if (photoUrl && !currentUserPhoto) {
+        (globalThis as any).chrome.runtime.sendMessage(
+          { type: 'FETCH_USER_PHOTO', url: photoUrl, sessionId: creds.sessionId },
+          (resp: any) => { if (resp?.success && resp.dataUrl) { currentUserPhoto = resp.dataUrl; cb(); } },
+        );
+      }
+    } catch { /* ignore */ }
+  };
+
   const fetchDebugLogs = async (): Promise<any[]> => {
     try {
       const credentials = await getSfCredentials();
@@ -3002,7 +3039,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       { icon: '📤', title: 'Export data', desc: 'Run SOQL and export the results as CSV.', onClick: () => openToolView('export') },
       { icon: '🧪', title: 'Generate sample data', desc: 'Create realistic test records for any object.', onClick: () => openToolView('sampledata') },
       { icon: '🔎', title: 'Where is this used?', desc: 'Find everything that references a field, class or flow.', onClick: () => openToolView('whereused') },
-      { icon: '🛠️', title: 'Browse all tools', desc: 'Object Manager, Automation Map, Org Limits, and more.', onClick: () => activateTab('tools') },
+      { icon: '🛠️', title: 'Browse all tools', desc: 'Object Manager, Automation Map, Org Status, and more.', onClick: () => activateTab('tools') },
     ];
     // Compact icon tiles (wrap into rows) instead of a tall list.
     const qaGrid = document.createElement('div');
@@ -3089,7 +3126,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       { id: 'sampledata', icon: '🧪', label: 'Sample Data', desc: 'Generate test records' },
       { id: 'whereused', icon: '🔎', label: 'Where Used', desc: 'Find what references a component' },
       { id: 'restexplorer', icon: '🧪', label: 'REST Explorer', desc: 'Call any Salesforce REST endpoint' },
-      { id: 'eventmonitor', icon: '📡', label: 'Event Monitor', desc: 'Subscribe to platform events & CDC live' },
+      { id: 'eventmonitor', icon: '📡', label: 'Event Monitor (Beta)', desc: 'Subscribe to platform events & CDC live' },
       { id: 'objectmanager', icon: '🛠️', label: 'Object Manager', desc: 'Create objects and fields' },
       { id: 'automationmap', icon: '🧭', label: 'Automation Map', desc: 'What fires on save' },
       { id: 'flowmanager', icon: '🌊', label: 'Flow Manager', desc: 'View, activate & open flows' },
@@ -3098,7 +3135,7 @@ function buildSpotlight(tabConfig: TabConfig) {
       { id: 'permcompare', icon: '🔐', label: 'Permission Comparison', desc: 'Compare profiles and permission sets' },
       { id: 'accessmap', icon: '🗺️', label: 'Access Explorer', desc: 'Object, field and user access' },
       { id: 'dataimport', icon: '⬆️', label: 'Data Import', desc: 'Insert / update / upsert / delete' },
-      { id: 'orglimits', icon: '📈', label: 'Org Limits', desc: 'All org limits and usage' },
+      { id: 'orglimits', icon: '📈', label: 'Org Status', desc: 'All org limits and usage' },
       { id: 'orgdetails', icon: '🏢', label: 'Org Details', desc: 'This org’s info' },
     ];
     const toolHits = TOOLS.filter((t) => t.label.toLowerCase().includes(q) || t.desc.toLowerCase().includes(q)).slice(0, 6);
@@ -4591,7 +4628,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => { searchInput.value = ''; toolView = 'restexplorer'; performSearch(); },
         },
         {
-          id: 'eventmonitor', icon: '📡', label: 'Event Monitor', desc: 'Subscribe to platform events, CDC & push topics live',
+          id: 'eventmonitor', icon: '📡', label: 'Event Monitor (Beta)', desc: 'Subscribe to platform events, CDC & push topics live',
           run: () => { searchInput.value = ''; toolView = 'eventmonitor'; performSearch(); },
         },
         {
@@ -4627,7 +4664,7 @@ function buildSpotlight(tabConfig: TabConfig) {
           run: () => { searchInput.value = ''; toolView = 'storage'; performSearch(); },
         },
         {
-          id: 'orglimits', icon: '📈', label: 'Org Limits', desc: 'All org limits & usage',
+          id: 'orglimits', icon: '📈', label: 'Org Status', desc: 'All org limits & usage',
           run: () => { searchInput.value = ''; toolView = 'orglimits'; performSearch(); },
         },
         {
@@ -4831,32 +4868,55 @@ function buildSpotlight(tabConfig: TabConfig) {
   };
 
   // ─── Tab bar (dynamic) ─────────────────────────────────────
+  // Active-tab background tint used by the vertical (full-page) sidebar.
+  const navActiveBg = G.accentSoft;
+
   const makeTabButton = (text: string, icon?: string) => {
     const b = document.createElement('button');
     if (icon) {
-      b.innerHTML = `<span style="margin-right:6px;font-size:14px">${icon}</span><span>${text}</span>`;
+      const iconSize = fullPage ? '16px' : '14px';
+      const mr = fullPage ? '11px' : '6px';
+      b.innerHTML = `<span style="margin-right:${mr};font-size:${iconSize}">${icon}</span><span>${text}</span>`;
     } else {
       b.textContent = text;
     }
-    b.style.display = 'inline-flex';
-    b.style.alignItems = 'center';
     b.style.color = T.tabInactive;
-    b.style.borderBottom = '3px solid transparent';
-    b.style.padding = '12px 0';
-    b.style.fontWeight = '600';
-    b.style.fontSize = '14px';
     b.style.backgroundColor = 'transparent';
     b.style.border = 'none';
     b.style.cursor = 'pointer';
     b.style.outline = 'none';
-    b.style.transition = 'all 0.2s';
+    b.style.transition = 'all 0.15s';
     b.style.fontFamily = 'inherit';
+    if (fullPage) {
+      // Vertical sidebar item.
+      b.style.display = 'flex';
+      b.style.alignItems = 'center';
+      b.style.width = '100%';
+      b.style.textAlign = 'left';
+      b.style.padding = '9px 11px';
+      b.style.borderRadius = '9px';
+      b.style.fontWeight = '600';
+      b.style.fontSize = '13.5px';
+    } else {
+      b.style.display = 'inline-flex';
+      b.style.alignItems = 'center';
+      b.style.borderBottom = '3px solid transparent';
+      b.style.padding = '12px 0';
+      b.style.fontWeight = '600';
+      b.style.fontSize = '14px';
+    }
     return b;
   };
 
   const styleTabButton = (b: HTMLButtonElement, active: boolean) => {
-    b.style.color = active ? T.textPrimary : T.tabInactive;
-    b.style.borderBottom = active ? `3px solid ${T.accent}` : '3px solid transparent';
+    if (fullPage) {
+      b.style.color = active ? T.accent : T.tabInactive;
+      b.style.backgroundColor = active ? navActiveBg : 'transparent';
+      b.style.fontWeight = active ? '700' : '600';
+    } else {
+      b.style.color = active ? T.textPrimary : T.tabInactive;
+      b.style.borderBottom = active ? `3px solid ${T.accent}` : '3px solid transparent';
+    }
   };
 
   const tabButtons: Record<string, HTMLButtonElement> = {};
@@ -4877,6 +4937,24 @@ function buildSpotlight(tabConfig: TabConfig) {
         pendingSpotlightTarget = 'tab:__settings';
         showSpotlightSearch();
       },
+      // In-memory metadata caches only — saved orgs / favorites / history are untouched.
+      cacheEntries: () => {
+        const out: { label: string; count: number }[] = [];
+        if (cachedObjects?.length) out.push({ label: 'Objects', count: cachedObjects.length });
+        if (cachedFlows?.length) out.push({ label: 'Flows', count: cachedFlows.length });
+        if (cachedUsers?.length) out.push({ label: 'Users', count: cachedUsers.length });
+        if (cachedSecurity?.length) out.push({ label: 'Security', count: cachedSecurity.length });
+        if (cachedApps?.length) out.push({ label: 'Apps', count: cachedApps.length });
+        if (cachedDebugLogs?.length) out.push({ label: 'Logs', count: cachedDebugLogs.length });
+        const md = Object.keys(metadataRecordsCache).length;
+        if (md) out.push({ label: 'Metadata types', count: md });
+        return out;
+      },
+      clearMetadataCache: () => {
+        cachedObjects = cachedFlows = cachedUsers = cachedSecurity = cachedApps = cachedDebugLogs = null;
+        Object.keys(metadataRecordsCache).forEach((k) => delete metadataRecordsCache[k]);
+        flashToast('Metadata cache cleared', 'success');
+      },
     });
   };
 
@@ -4886,7 +4964,10 @@ function buildSpotlight(tabConfig: TabConfig) {
     toolView = null;
     metadataType = null;
     if (debugLiveTimer) { clearInterval(debugLiveTimer); debugLiveTimer = null; }
-    Object.keys(tabButtons).forEach(tid => styleTabButton(tabButtons[tid], tid === id));
+    // The full-page curated sidebar highlights by tab AND tool, so rebuild it to
+    // reflect the new active tab; the overlay strip just restyles in place.
+    if (fullPage) renderTabBar();
+    else Object.keys(tabButtons).forEach(tid => styleTabButton(tabButtons[tid], tid === id));
 
     if (id === '__settings') {
       inputContainer.style.display = 'none';
@@ -4970,9 +5051,168 @@ function buildSpotlight(tabConfig: TabConfig) {
   // Show at most this many tabs in the bar; the rest go under "More ▾".
   const MAX_VISIBLE_TABS = 5;
 
+    // Neutral person-silhouette avatar (shown when there's no profile photo).
+    const AVATAR_GRAY = '#9aa1ab';
+    const personSvg = (size: number) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="#ffffff" aria-hidden="true"><path d="M12 12.2a4.4 4.4 0 1 0 0-8.8 4.4 4.4 0 0 0 0 8.8zm0 2.1c-4 0-7.2 2.4-7.2 5.3V21h14.4v-1.4c0-2.9-3.2-5.3-7.2-5.3z"/></svg>`;
+
+    // A modal card with the current logged-in user's details + profile photo.
+    const showUserInfoModal = () => {
+      const isDark = currentSpotlightTheme === 'dark';
+      const C = getTheme(isDark);
+      const backdrop = document.createElement('div');
+      Object.assign(backdrop.style, { position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.45)', zIndex: '2147483649', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Inter, system-ui, sans-serif' });
+      const cardEl = document.createElement('div');
+      Object.assign(cardEl.style, { width: '380px', maxWidth: '92vw', background: C.card, color: C.text, border: `1px solid ${C.border}`, borderRadius: '16px', boxShadow: '0 24px 60px rgba(0,0,0,0.45)', overflow: 'hidden' });
+      const close = () => { backdrop.remove(); document.removeEventListener('keydown', onKey, true); };
+      const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      const render = () => {
+        const info = currentUserInfo || {};
+        cardEl.innerHTML = '';
+        const head = document.createElement('div');
+        Object.assign(head.style, { display: 'flex', alignItems: 'center', gap: '14px', padding: '22px 24px', borderBottom: `1px solid ${C.divider}`, background: C.headerBg });
+        const av = document.createElement('div');
+        Object.assign(av.style, { width: '56px', height: '56px', borderRadius: '50%', flexShrink: '0', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: currentUserPhoto ? 'transparent' : AVATAR_GRAY });
+        if (currentUserPhoto) { const img = document.createElement('img'); img.src = currentUserPhoto; Object.assign(img.style, { width: '100%', height: '100%', objectFit: 'cover' }); av.appendChild(img); } else av.innerHTML = personSvg(34);
+        head.appendChild(av);
+        const ht = document.createElement('div'); Object.assign(ht.style, { minWidth: '0' });
+        const nm = document.createElement('div'); nm.textContent = info.name || 'Loading…'; Object.assign(nm.style, { fontSize: '16px', fontWeight: '800', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+        const sub = document.createElement('div'); sub.textContent = info.title || info.email || ''; Object.assign(sub.style, { fontSize: '12.5px', color: C.muted, marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+        ht.appendChild(nm); ht.appendChild(sub); head.appendChild(ht);
+        const x = document.createElement('button'); x.textContent = '✕'; Object.assign(x.style, { marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer', color: C.muted, fontSize: '15px', alignSelf: 'flex-start' }); x.addEventListener('click', close); head.appendChild(x);
+        cardEl.appendChild(head);
+        const body = document.createElement('div'); Object.assign(body.style, { padding: '14px 24px 22px' });
+        const rows: [string, string][] = [
+          ['Username', info.username || '—'],
+          ['Email', info.email || '—'],
+          ['Company', info.companyName || '—'],
+          ['User Id', info.id || currentUserId || '—'],
+          ['Org', cleanSfDomain(activeSfHost())],
+        ];
+        rows.forEach(([k, v]) => {
+          const r = document.createElement('div'); Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 0', borderTop: `1px solid ${C.divider}` });
+          const kk = document.createElement('span'); kk.textContent = k; Object.assign(kk.style, { fontSize: '12.5px', color: C.muted, width: '92px', flexShrink: '0' });
+          const vv = document.createElement('span'); vv.textContent = v; Object.assign(vv.style, { fontSize: '13px', fontWeight: '600', wordBreak: 'break-word', flex: '1' });
+          const cp = document.createElement('span'); cp.textContent = '⧉'; Object.assign(cp.style, { cursor: 'pointer', color: C.faint, fontSize: '12px' }); cp.title = 'Copy'; cp.addEventListener('click', () => { navigator.clipboard?.writeText(v); flashToast('Copied'); });
+          r.appendChild(kk); r.appendChild(vv); if (v && v !== '—') r.appendChild(cp); body.appendChild(r);
+        });
+        cardEl.appendChild(body);
+      };
+      render();
+      backdrop.appendChild(cardEl);
+      document.body.appendChild(backdrop);
+      document.addEventListener('keydown', onKey, true);
+      loadCurrentUser(render);
+    };
+
+    // The current-user avatar shown at the top of the full-page sidebar.
+    const buildUserBox = () => {
+      const box = document.createElement('button');
+      Object.assign(box.style, { display: 'flex', alignItems: 'center', gap: '10px', width: '100%', padding: fullPageSidebarCollapsed ? '2px 0 10px' : '2px 8px 12px', background: 'transparent', border: 'none', borderBottom: `1px solid ${T.divider}`, marginBottom: '8px', cursor: 'pointer', fontFamily: 'inherit', justifyContent: fullPageSidebarCollapsed ? 'center' : 'flex-start' });
+      box.title = 'Current user';
+      const paint = () => {
+        box.innerHTML = '';
+        const av = document.createElement('div');
+        Object.assign(av.style, { width: '30px', height: '30px', borderRadius: '50%', flexShrink: '0', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: currentUserPhoto ? 'transparent' : AVATAR_GRAY });
+        if (currentUserPhoto) { const img = document.createElement('img'); img.src = currentUserPhoto; Object.assign(img.style, { width: '100%', height: '100%', objectFit: 'cover' }); av.appendChild(img); } else av.innerHTML = personSvg(19);
+        box.appendChild(av);
+        if (!fullPageSidebarCollapsed) {
+          const txt = document.createElement('div'); Object.assign(txt.style, { display: 'flex', flexDirection: 'column', minWidth: '0', textAlign: 'left' });
+          const nm = document.createElement('div'); nm.textContent = currentUserInfo?.name || 'Loading…'; Object.assign(nm.style, { fontSize: '13px', fontWeight: '700', color: T.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+          const sub = document.createElement('div'); sub.textContent = currentUserInfo?.companyName || cleanSfDomain(activeSfHost()); Object.assign(sub.style, { fontSize: '11px', color: T.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+          txt.appendChild(nm); txt.appendChild(sub); box.appendChild(txt);
+        }
+      };
+      paint();
+      box.addEventListener('click', () => showUserInfoModal());
+      loadCurrentUser(paint);
+      return box;
+    };
+
+    // Collapse a full-page sidebar item to icon-only: hide the label, centre and
+    // enlarge the icon so it fills the narrow rail.
+    const applyCollapsed = (b: HTMLButtonElement, label: string) => {
+      if (!fullPage || !fullPageSidebarCollapsed) return;
+      const spans = b.querySelectorAll('span');
+      if (spans[1]) (spans[1] as HTMLElement).style.display = 'none';
+      if (spans[0]) { (spans[0] as HTMLElement).style.marginRight = '0'; (spans[0] as HTMLElement).style.fontSize = '20px'; }
+      b.style.justifyContent = 'center';
+      b.style.padding = '9px 0';
+      b.title = label;
+    };
+
   const renderTabBar = () => {
     tabsContainer.innerHTML = '';
     Object.keys(tabButtons).forEach(k => delete tabButtons[k]);
+
+    // Full-page sidebar width tracks the collapsed state.
+    if (fullPage) {
+      tabsContainer.style.width = fullPageSidebarCollapsed ? '50px' : '208px';
+      tabsContainer.style.padding = fullPageSidebarCollapsed ? '12px 5px' : '12px 10px';
+    }
+
+    // Current-user avatar at the very top of the sidebar; click → user info modal.
+    if (fullPage) tabsContainer.appendChild(buildUserBox());
+
+    // Collapse / expand toggle at the top of the vertical sidebar.
+    if (fullPage) {
+      const toggle = document.createElement('button');
+      toggle.title = fullPageSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+      toggle.textContent = fullPageSidebarCollapsed ? '»' : '«';
+      Object.assign(toggle.style, { display: 'flex', alignItems: 'center', justifyContent: fullPageSidebarCollapsed ? 'center' : 'flex-end', width: '100%', padding: '4px 10px 10px', background: 'transparent', border: 'none', cursor: 'pointer', color: T.tabInactive, fontSize: '16px', lineHeight: '1', fontFamily: 'inherit', marginBottom: '4px' });
+      toggle.addEventListener('click', () => {
+        fullPageSidebarCollapsed = !fullPageSidebarCollapsed;
+        try { (globalThis as any).chrome?.storage?.local?.set({ [SIDEBAR_COLLAPSED_KEY]: fullPageSidebarCollapsed }); } catch { /* ignore */ }
+        renderTabBar();
+      });
+      tabsContainer.appendChild(toggle);
+    }
+
+    // Full-page: render the curated sidebar (key tabs + tool shortcuts) instead
+    // of the raw tab list, then the Settings gear pinned to the bottom.
+    if (fullPage) {
+      const hoverBg = currentSpotlightTheme === 'dark' ? 'rgba(148,163,184,0.10)' : 'rgba(0,0,0,0.035)';
+      FULLPAGE_SIDEBAR.forEach((item) => {
+        const active = item.kind === 'tab'
+          ? (activeTab === item.id && (item.id !== 'tools' || !toolView))
+          : (activeTab === 'tools' && toolView === item.id);
+        const b = makeTabButton(item.label, item.icon);
+        b.style.whiteSpace = 'nowrap';
+        styleTabButton(b, active);
+        applyCollapsed(b, item.label);
+        b.addEventListener('mouseenter', () => { if (!b.style.backgroundColor || b.style.backgroundColor === 'transparent') b.style.backgroundColor = hoverBg; });
+        b.addEventListener('mouseleave', () => {
+          const isActive = item.kind === 'tab' ? (activeTab === item.id && (item.id !== 'tools' || !toolView)) : (activeTab === 'tools' && toolView === item.id);
+          if (!isActive) b.style.backgroundColor = 'transparent';
+        });
+        b.addEventListener('click', () => {
+          if (item.kind === 'tab') { activateTab(item.id); }
+          else { activateTab('tools').then(() => { toolView = item.id; performSearch(); renderTabBar(); }); }
+        });
+        tabButtons[item.kind === 'tool' ? `tool:${item.id}` : item.id] = b;
+        tabsContainer.appendChild(b);
+      });
+
+      const gear = makeTabButton('Settings', '⚙');
+      gear.title = 'Settings';
+      gear.style.marginTop = 'auto';
+      styleTabButton(gear, activeTab === '__settings');
+      applyCollapsed(gear, 'Settings');
+      gear.addEventListener('mouseenter', () => { if (activeTab !== '__settings') gear.style.backgroundColor = hoverBg; });
+      gear.addEventListener('mouseleave', () => { if (activeTab !== '__settings') gear.style.backgroundColor = 'transparent'; });
+      gear.addEventListener('click', () => openSettings());
+      tabButtons['__settings'] = gear;
+      tabsContainer.appendChild(gear);
+
+      // Brand (logo + name) at the very bottom of the sidebar, under Settings.
+      brand.style.borderTop = `1px solid ${T.divider}`;
+      brand.style.padding = fullPageSidebarCollapsed ? '10px 0 2px' : '10px 8px 2px';
+      brand.style.marginTop = '6px';
+      brand.style.justifyContent = fullPageSidebarCollapsed ? 'center' : 'flex-start';
+      brandText.style.display = fullPageSidebarCollapsed ? 'none' : 'block';
+      tabsContainer.appendChild(brand);
+      return;
+    }
 
     const visibleIds = tabConfig.order.filter(id => !tabConfig.hidden.includes(id) && ALL_SPOTLIGHT_TABS.some(t => t.id === id));
 
@@ -4998,6 +5238,12 @@ function buildSpotlight(tabConfig: TabConfig) {
       const b = makeTabButton(def.label, def.icon);
       b.style.whiteSpace = 'nowrap';
       styleTabButton(b, activeTab === id);
+      applyCollapsed(b, def.label);
+      if (fullPage) {
+        const hoverBg = currentSpotlightTheme === 'dark' ? 'rgba(148,163,184,0.10)' : 'rgba(0,0,0,0.035)';
+        b.addEventListener('mouseenter', () => { if (activeTab !== id) b.style.backgroundColor = hoverBg; });
+        b.addEventListener('mouseleave', () => { if (activeTab !== id) b.style.backgroundColor = 'transparent'; });
+      }
       b.addEventListener('click', () => activateTab(id));
       tabButtons[id] = b;
       tabsContainer.appendChild(b);
@@ -5026,12 +5272,18 @@ function buildSpotlight(tabConfig: TabConfig) {
     }
 
     const gear = makeTabButton('Settings', '⚙');
-    gear.style.marginLeft = fullPage ? 'auto' : '4px';
     gear.title = 'Settings';
-    // Enlarge just the gear glyph so Settings stands out in the tab strip.
-    const gearIcon = gear.querySelector('span');
-    if (gearIcon) { (gearIcon as HTMLElement).style.fontSize = '19px'; (gearIcon as HTMLElement).style.marginRight = '7px'; }
+    if (fullPage) {
+      // Sit at the bottom of the vertical sidebar.
+      gear.style.marginTop = 'auto';
+    } else {
+      gear.style.marginLeft = '4px';
+      // Enlarge just the gear glyph so Settings stands out in the horizontal strip.
+      const gearIcon = gear.querySelector('span');
+      if (gearIcon) { (gearIcon as HTMLElement).style.fontSize = '19px'; (gearIcon as HTMLElement).style.marginRight = '7px'; }
+    }
     styleTabButton(gear, activeTab === '__settings');
+    applyCollapsed(gear, 'Settings');
     gear.addEventListener('click', () => openSettings());
     tabButtons['__settings'] = gear;
     tabsContainer.appendChild(gear);
@@ -5101,7 +5353,13 @@ function buildSpotlight(tabConfig: TabConfig) {
     else activateTab(tabConfig.defaultTab);
   } else if (SPOTLIGHT_PAGE && pageTool) { const t = pageTool; activateTab('tools').then(() => { toolView = t; performSearch(); }); }
   else if (SPOTLIGHT_PAGE && pageTab) { activateTab(pageTab); }
-  else activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : tabConfig.defaultTab);
+  else {
+    // In full-page mode the sidebar is curated; if the saved default tab isn't
+    // one of its tabs, fall back to Home so we never land on a hidden tab.
+    let defTab = tabConfig.defaultTab;
+    if (fullPage && !FULLPAGE_SIDEBAR.some((i) => i.kind === 'tab' && i.id === defTab)) defTab = 'home';
+    activateTab((SPOTLIGHT_PAGE && pageAnalyzeLog) ? 'debug' : defTab);
+  }
   searchInput.focus();
 }
 

@@ -108,7 +108,7 @@ export function renderOrgLimitsExplorerInto(host: HTMLElement, deps: OrgLimitsDe
   back.addEventListener('click', deps.onBack);
   head.appendChild(back);
   head.appendChild(el('span', { color: C.faint }, '/'));
-  head.appendChild(el('div', { fontSize: '15px', fontWeight: '800', color: C.text }, '📈 Org Limits'));
+  head.appendChild(el('div', { fontSize: '15px', fontWeight: '800', color: C.text }, '📈 Org Status'));
   const reload = el('button', { marginLeft: 'auto', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '8px', padding: '5px 10px', cursor: 'pointer', color: C.muted, fontFamily: 'inherit', fontSize: '12px', fontWeight: '700' }, '↻ Reload');
   head.appendChild(reload);
   root.appendChild(head);

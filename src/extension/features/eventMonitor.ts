@@ -60,7 +60,7 @@ export function renderEventMonitorInto(host: HTMLElement, deps: EventMonitorDeps
   back.addEventListener('click', () => { teardown(); deps.onBack(); });
   head.appendChild(back);
   const titleWrap = el('div', { display: 'flex', flexDirection: 'column' });
-  titleWrap.appendChild(el('div', { fontSize: '16px', fontWeight: '800' }, '📡 Event Monitor'));
+  titleWrap.appendChild(el('div', { fontSize: '16px', fontWeight: '800' }, '📡 Event Monitor (Beta)'));
   titleWrap.appendChild(el('div', { fontSize: '12px', color: C.muted }, 'Subscribe to a streaming channel and watch events live'));
   head.appendChild(titleWrap);
   const statusChip = el('div', { marginLeft: 'auto', fontSize: '12px', fontWeight: '700', color: C.muted });
@@ -137,6 +137,18 @@ export function renderEventMonitorInto(host: HTMLElement, deps: EventMonitorDeps
         .filter((e) => e.custom === wantCustom)
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((e) => ({ channel: `/event/${e.name}`, label: e.label && e.label !== e.name ? `${e.label} (${e.name})` : e.name }));
+      // Fallback if the global describe surfaced no platform events (e.g. an org /
+      // API version where eventSchema isn't listed): custom events are still
+      // discoverable via EntityDefinition; standard events must be typed directly.
+      if (!items.length && !error) {
+        if (wantCustom) {
+          const r = await deps.runQuery("SELECT QualifiedApiName, Label FROM EntityDefinition WHERE QualifiedApiName LIKE '%__e' ORDER BY QualifiedApiName LIMIT 500");
+          error = r.error;
+          items = (r.records || []).map((rec: any) => ({ channel: `/event/${rec.QualifiedApiName}`, label: rec.Label && rec.Label !== rec.QualifiedApiName ? `${rec.Label} (${rec.QualifiedApiName})` : rec.QualifiedApiName })).filter((i: any) => i.channel);
+        } else {
+          error = 'None found — type a channel like /event/LoginEventStream';
+        }
+      }
     } else {
       const soql = type.id === 'cdc' ? "SELECT QualifiedApiName, Label FROM EntityDefinition WHERE QualifiedApiName LIKE '%ChangeEvent' ORDER BY QualifiedApiName LIMIT 500"
         : type.id === 'pushtopic' ? 'SELECT Name FROM PushTopic ORDER BY Name LIMIT 500'

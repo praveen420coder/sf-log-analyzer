@@ -15,6 +15,10 @@ export interface SettingsPanelDeps {
   // Lets the host rebuild the WHOLE panel so a theme change applies to every tab
   // instantly (not just this settings screen).
   applyTheme?: (theme: 'light' | 'dark') => void;
+  // In-memory metadata caches the panel keeps (Objects, Flows, …) and a way to
+  // drop them. "Clear cache" must NEVER touch saved orgs, favorites or history.
+  cacheEntries?: () => { label: string; count: number }[];
+  clearMetadataCache?: () => void;
 }
 
 type Theme = ReturnType<typeof getTheme>;
@@ -66,22 +70,19 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
   let SES: VisitedOrg[] = [];
   let TC: TabConfig = defaultTabConfig();
   let EX: ExportSettings = { ...DEFAULT_EXPORT };
-  let dataKeys: { key: string; label: string; count: number }[] = [];
 
   host.innerHTML = '';
   host.appendChild(el('div', { padding: '30px', fontSize: '13px', color: getTheme(dark).muted }, 'Loading settings…'));
 
-  const loadDataKeys = async () => {
-    const [sess, rec, fav] = await Promise.all([get<VisitedOrg[]>(KEYS.sessions, []), get<unknown[]>(KEYS.recents, []), get<unknown[]>(KEYS.favorites, [])]);
+  // Loads saved orgs (for the Connection table). Deliberately does NOT feed the
+  // Cache section — saved orgs / favorites are user data, not cache.
+  const loadSessions = async () => {
+    const sess = await get<VisitedOrg[]>(KEYS.sessions, []);
     SES = Array.isArray(sess) ? sess : [];
-    dataKeys = [];
-    if (SES.length) dataKeys.push({ key: KEYS.sessions, label: 'Orgs', count: SES.length });
-    if (Array.isArray(rec) && rec.length) dataKeys.push({ key: KEYS.recents, label: 'History', count: rec.length });
-    if (Array.isArray(fav) && fav.length) dataKeys.push({ key: KEYS.favorites, label: 'Favorites', count: fav.length });
   };
 
   Promise.all([
-    get(KEYS.settings, {}), get(KEYS.tools, {}), get(KEYS.prefs, {}), get(KEYS.usage, {}), get<TabConfig | null>(KEYS.tabConfig, null), get(KEYS.exportSettings, {}), loadDataKeys(),
+    get(KEYS.settings, {}), get(KEYS.tools, {}), get(KEYS.prefs, {}), get(KEYS.usage, {}), get<TabConfig | null>(KEYS.tabConfig, null), get(KEYS.exportSettings, {}), loadSessions(),
   ]).then(([s, t, p, u, tc, ex]) => {
     A = { ...DEFAULT_APPEARANCE, ...(s as object) };
     TL = { ...DEFAULT_TOOLS, ...(t as object) };
@@ -245,25 +246,25 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
 
   // ── sections ─────────────────────────────────────────────────────────────────
   function renderCache(add: (...n: HTMLElement[]) => void) {
+    const entries = deps.cacheEntries?.() || [];
     const c1 = card();
     c1.appendChild(sectionHead('System', 'Cache acceleration', 'Keeps metadata from frequently used tools handy so screens load faster without hitting Salesforce every time.', pillToggle(P.cacheEnabled, (v) => saveP({ cacheEnabled: v }))));
     c1.appendChild(divider());
     c1.appendChild(optionRow(P.cacheAutoUpdate, (v) => saveP({ cacheAutoUpdate: v }), 'Auto update cache', 'Keeps cached data fresh in the background.'));
     const clr = el('div', { marginTop: '16px' });
-    clr.appendChild(btn('🗑  Clear cache', 'danger', async () => { await remove(dataKeys.map((d) => d.key)); await loadDataKeys(); renderContent(); }));
+    // Clears ONLY the in-memory metadata caches — never saved orgs, favorites or history.
+    clr.appendChild(btn('🗑  Clear cache', 'danger', () => { deps.clearMetadataCache?.(); renderContent(); }));
     c1.appendChild(clr);
 
     const c2 = card();
-    c2.appendChild(sectionHead('', 'Cached entries', 'Shows the data currently stored locally.'));
+    c2.appendChild(sectionHead('', 'Cached entries', 'Metadata cached this session to speed up screens (cleared on refresh).'));
     const chips = el('div', { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '16px' });
-    if (!dataKeys.length) chips.appendChild(el('div', { fontSize: '13px', color: C.muted }, 'Nothing cached yet.'));
-    dataKeys.forEach((d) => {
-      const chip = el('span', { display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 10px 6px 12px', border: `1px solid ${C.border}`, borderRadius: '999px', fontSize: '12.5px', fontWeight: '600' });
+    if (!entries.length) chips.appendChild(el('div', { fontSize: '13px', color: C.muted }, 'Nothing cached yet.'));
+    entries.forEach((d) => {
+      const chip = el('span', { display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 12px', border: `1px solid ${C.border}`, borderRadius: '999px', fontSize: '12.5px', fontWeight: '600' });
       chip.appendChild(el('span', undefined, d.label));
       chip.appendChild(el('span', { color: C.faint }, String(d.count)));
-      const x = el('span', { cursor: 'pointer', color: C.faint }, '✕');
-      x.addEventListener('click', async () => { await remove([d.key]); await loadDataKeys(); renderContent(); });
-      chip.appendChild(x); chips.appendChild(chip);
+      chips.appendChild(chip);
     });
     c2.appendChild(chips);
     add(c1, c2);
@@ -290,7 +291,7 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
       c.appendChild(box);
     }
     const clr = el('div', { marginTop: '18px' });
-    clr.appendChild(btn('🗑  Clear history', 'danger', async () => { await remove([KEYS.recents]); await loadDataKeys(); renderContent(); }));
+    clr.appendChild(btn('🗑  Clear history', 'danger', async () => { await remove([KEYS.recents]); renderContent(); }));
     c.appendChild(clr);
     add(c);
   }
@@ -392,7 +393,7 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
       list.appendChild(row);
     });
     c.appendChild(list);
-    c.appendChild(el('div', { fontSize: '12px', color: C.muted, marginTop: '12px' }, 'Drag rows (or use the arrows) to reorder. Changes apply the next time you open the Spotlight panel.'));
+    c.appendChild(el('div', { fontSize: '12px', color: C.muted, marginTop: '12px' }, 'Drag rows (or use the arrows) to reorder. Applies to the overlay panel and takes effect next time you open it — the full-page tab uses a fixed sidebar.'));
     add(c);
   }
 
@@ -401,7 +402,6 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
     c.appendChild(sectionHead('Experience', 'Notification preferences', 'Choose how and when you want to be notified about background operations.'));
     c.appendChild(divider());
     c.appendChild(optionRow(P.notifToast, (v) => saveP({ notifToast: v }), 'In-extension notifications', 'Show toast messages within the extension for quick feedback.'));
-    c.appendChild(optionRow(P.notifSpinner, (v) => saveP({ notifSpinner: v }), 'API activity console', 'Show the live API activity console in the panel footer (logs every Salesforce request the extension makes).'));
     add(c);
   }
 
@@ -517,6 +517,11 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
       add(c); return;
     }
     const orgType = (o: VisitedOrg) => { const h = (o.host || '').toLowerCase(); if (h.includes('scratch')) return 'Scratch'; if (h.includes('sandbox') || h.includes('--')) return 'Sandbox'; if (h.includes('dev-ed') || h.includes('trailblaze')) return 'Developer'; return 'Production'; };
+    // Copying a live session token puts an org-access credential on the clipboard.
+    const warn = el('div', { display: 'flex', gap: '9px', alignItems: 'flex-start', background: dark ? 'rgba(217,119,6,0.12)' : '#fffbeb', border: `1px solid ${dark ? 'rgba(217,119,6,0.4)' : '#fde68a'}`, borderRadius: '10px', padding: '10px 13px', margin: '12px 0 4px' });
+    warn.appendChild(el('span', { fontSize: '14px', flexShrink: '0' }, '⚠️'));
+    warn.appendChild(el('div', { fontSize: '12.5px', color: C.muted, lineHeight: '1.5' }, 'Session id / access token are live org credentials — anything on your clipboard can be read by other apps. Copy them only when you need them, and prefer sandbox / scratch / dev orgs.'));
+    c.appendChild(warn);
     const table = el('div', { marginTop: '10px', border: `1px solid ${C.border}`, borderRadius: '12px', overflow: 'hidden' });
     const grid = '110px 1fr 140px 300px';
     const hdr = el('div', { display: 'grid', gridTemplateColumns: grid, gap: '8px', padding: '10px 14px', background: C.headerBg, fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.04em', color: C.faint });
@@ -547,7 +552,7 @@ export function renderSettingsPanelInto(host: HTMLElement, deps: SettingsPanelDe
         copyWithFlash(auth, 'Auth Info', cr.sessionId ? info : '');
       });
       const del = miniBtn('🗑', 'Remove this org', true);
-      del.addEventListener('click', async () => { SES = SES.filter((s) => s.host !== o.host); await set(KEYS.sessions, SES); await loadDataKeys(); renderContent(); });
+      del.addEventListener('click', async () => { SES = SES.filter((s) => s.host !== o.host); await set(KEYS.sessions, SES); renderContent(); });
       acts.append(sid, tok, auth, del);
       row.appendChild(acts);
       table.appendChild(row);
